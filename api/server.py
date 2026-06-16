@@ -93,6 +93,11 @@ def _build_source_label(data_source: str, quote_source: str) -> str:
     return f"{ohlcv} (quote: {quote})"
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 @app.get("/api/data-source/status")
 def data_source_status():
     """Return TwelveData and Alpha Vantage rate-limit state."""
