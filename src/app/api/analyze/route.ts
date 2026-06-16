@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const PYTHON_BASE = process.env.PYTHON_API_BASE ?? "http://localhost:8787";
 
@@ -16,7 +17,11 @@ export async function GET(req: NextRequest) {
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch (e: unknown) {
-    const msg = (e as Error)?.name === "TimeoutError" ? "timeout" : String(e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    const err = e as Error;
+    const msg = err?.name === "TimeoutError" ? "timeout" : String(err);
+    return NextResponse.json(
+      { error: msg, target: `${PYTHON_BASE}/api/analyze` },
+      { status: 500 }
+    );
   }
 }

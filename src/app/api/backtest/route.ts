@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const PYTHON_BASE = process.env.PYTHON_API_BASE ?? "http://localhost:8787";
 
