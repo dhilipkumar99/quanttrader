@@ -2,32 +2,138 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
 import { EquityChart } from "@/components/charts/EquityChart";
 import { InfoTooltip } from "@/components/ui/Tooltip";
-import { fmt, fmtPct, fmtMoney, cn } from "@/lib/utils";
+import { fmt, fmtPct, fmtMoney } from "@/lib/utils";
 import type { BacktestResult } from "@/types/quant";
-import { FlaskConical, TrendingUp, AlertTriangle, Timer } from "lucide-react";
+import { FlaskConical, AlertTriangle, Timer, BookOpen } from "lucide-react";
 
-interface Props {
-  result: BacktestResult | null;
-  loading: boolean;
-  onRun: (cash: number, period: string) => void;
-  symbol: string;
+const FONT_BODY = "'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif";
+
+// Benchmarks for plain-English comparison
+const SHARPE_LABELS = [
+  { threshold: 2.0,  tier: "Exceptional",  note: "better than most hedge funds" },
+  { threshold: 1.5,  tier: "Excellent",    note: "top-quartile institutional performance" },
+  { threshold: 1.0,  tier: "Good",         note: "above-average, suitable for real capital" },
+  { threshold: 0.5,  tier: "Marginal",     note: "roughly in line with passive SPY investing" },
+  { threshold: 0.0,  tier: "Below average",note: "underperforms on a risk-adjusted basis" },
+  { threshold: -Infinity, tier: "Poor",    note: "returns don't justify the volatility taken" },
+];
+
+function sharpeLabel(s: number) {
+  return SHARPE_LABELS.find(b => s >= b.threshold) ?? SHARPE_LABELS[SHARPE_LABELS.length - 1];
+}
+
+function ddNote(ddPct: number, cash: number) {
+  const dollar = (cash * ddPct / 100).toFixed(0);
+  if (ddPct < 5)   return `only ${ddPct.toFixed(1)}% — very mild. On $${Number(cash).toLocaleString()} that's a temporary dip of $${dollar}.`;
+  if (ddPct < 15)  return `${ddPct.toFixed(1)}% — modest. You'd have seen your $${Number(cash).toLocaleString()} drop by $${dollar} at the worst moment.`;
+  if (ddPct < 30)  return `${ddPct.toFixed(1)}% — significant. That's a $${dollar} paper loss at the worst point. Psychologically hard to hold through.`;
+  return `${ddPct.toFixed(1)}% — severe. At worst your $${Number(cash).toLocaleString()} dropped $${dollar}. Most traders would have panic-sold.`;
+}
+
+function alphaNote(alpha: number | undefined) {
+  if (alpha === undefined) return null;
+  if (alpha > 5)   return `The strategy beat buy-and-hold by +${alpha.toFixed(1)}% — a meaningful edge.`;
+  if (alpha > 0)   return `Slightly ahead of buy-and-hold by +${alpha.toFixed(1)}% — genuine but narrow edge.`;
+  if (alpha > -5)  return `Slightly behind buy-and-hold by ${alpha.toFixed(1)}% — transaction costs are eating the edge.`;
+  return `Lagged buy-and-hold by ${alpha.toFixed(1)}% — the strategy added friction without adding return.`;
+}
+
+function winRateNote(wr: number, avgWin: number, avgLoss: number) {
+  const rr = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0;
+  const msg = rr >= 1.5
+    ? `Win rate ${wr}% with ${rr.toFixed(1)}× reward-to-risk — wins are larger than losses. Good edge.`
+    : rr >= 1.0
+    ? `Win rate ${wr}% with ${rr.toFixed(1)}× reward-to-risk — wins and losses roughly balanced.`
+    : `Win rate ${wr}% but reward-to-risk is only ${rr.toFixed(1)}× — losses outsize wins. Needs improvement.`;
+  return msg;
+}
+
+function BacktestVerdict({ result, cash }: { result: BacktestResult; cash: number }) {
+  const sl  = sharpeLabel(result.sharpe);
+  const dd  = ddNote(result.max_drawdown, cash);
+  const al  = alphaNote(result.alpha);
+  const wr  = winRateNote(result.win_rate, result.avg_win, result.avg_loss);
+
+  const verdictColor =
+    sl.tier === "Exceptional" || sl.tier === "Excellent" ? "var(--green)" :
+    sl.tier === "Good"        ? "var(--blue)"   :
+    sl.tier === "Marginal"    ? "var(--yellow)"  : "var(--red)";
+
+  return (
+    <div className="panel overflow-hidden">
+      <div className="panel-header" style={{ background: "var(--bg-raised)" }}>
+        <div className="flex items-center gap-1.5">
+          <BookOpen className="h-3 w-3" style={{ color: "var(--text-muted)" }} />
+          <span>Results Interpretation</span>
+        </div>
+        <span style={{ fontFamily: FONT_BODY, fontSize: "10px", color: verdictColor, fontWeight: 600 }}>
+          {sl.tier}
+        </span>
+      </div>
+      <div className="p-3 space-y-3">
+
+        {/* Verdict headline */}
+        <p style={{ fontFamily: FONT_BODY, fontSize: "13px", lineHeight: 1.75, color: "var(--text-primary)" }}>
+          A Sharpe ratio of{" "}
+          <span style={{ fontFamily: "'SF Mono', monospace", fontWeight: 700, color: verdictColor }}>
+            {result.sharpe.toFixed(2)}
+          </span>{" "}
+          is <span style={{ fontWeight: 600 }}>{sl.tier.toLowerCase()}</span> — {sl.note}.
+          {" "}SPY historically runs 0.5–0.8. Most retail strategies fail to exceed 0.8 over multi-year periods.
+        </p>
+
+        {/* Detail bullets */}
+        <div className="space-y-2">
+          {[
+            { label: "Drawdown", text: `Your max drawdown was ${dd}` },
+            al ? { label: "Alpha", text: al } : null,
+            { label: "Win quality", text: wr },
+          ].filter(Boolean).map(row => (
+            <div key={(row as { label: string }).label} className="flex gap-2 items-start">
+              <span style={{ fontFamily: FONT_BODY, fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
+                textTransform: "uppercase", color: "var(--text-muted)", flexShrink: 0, paddingTop: "3px", minWidth: "72px" }}>
+                {(row as { label: string }).label}
+              </span>
+              <span style={{ fontFamily: FONT_BODY, fontSize: "12px", lineHeight: 1.65, color: "var(--text-secondary)" }}>
+                {(row as { text: string }).text}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Recommendation chip */}
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: "10px" }}>
+          <span style={{ fontFamily: FONT_BODY, fontSize: "11px", fontWeight: 600, color: verdictColor }}>
+            {sl.tier === "Exceptional" || sl.tier === "Excellent"
+              ? "→ Strong candidate for real-money deployment with proper position sizing."
+              : sl.tier === "Good"
+              ? "→ Solid strategy. Paper trade for another cycle to confirm consistency."
+              : sl.tier === "Marginal"
+              ? "→ Edge exists but is thin. Consider tighter filters or a longer test window."
+              : "→ Do not trade this with real capital yet. Revisit signal logic and costs."}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const PERIODS = ["3mo", "6mo", "1y", "2y", "5y"];
 
-const TOOLTIPS = {
-  sharpe: "Risk-adjusted return. Above 1.0 is good, above 2.0 is excellent. Compares your return to a risk-free asset.",
-  maxDD: "The biggest peak-to-trough drop during the period. Lower is better.",
-  winRate: "What percentage of individual trades were profitable.",
-  sortino: "Like Sharpe, but only penalizes downside volatility — a more lenient measure.",
-  slippage: "The difference between the expected price and the actual fill price, in basis points (1 bps = 0.01%). Lower is better.",
+const TIPS = {
+  sharpe:   "Risk-adjusted return. >1 = good, >2 = excellent.",
+  maxDD:    "Largest peak-to-trough drop during the period.",
+  winRate:  "% of trades that were profitable.",
+  sortino:  "Like Sharpe but only penalises downside volatility.",
+  slippage: "Difference between expected and actual fill price in basis points.",
 };
 
-export function SimulatorPanel({ result, loading, onRun, symbol }: Props) {
-  const [cash, setCash]     = useState("100000");
+export function SimulatorPanel({ result, loading, onRun, symbol }: {
+  result: BacktestResult | null; loading: boolean; onRun: (cash: number, period: string) => void; symbol: string;
+}) {
+  const [cash,   setCash]   = useState("100000");
   const [period, setPeriod] = useState("1y");
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -42,273 +148,164 @@ export function SimulatorPanel({ result, loading, onRun, symbol }: Props) {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [loading]);
 
-  const bnh = result
-    ? ((result.final_value / result.initial_cash - 1) * 100 - result.total_return)
-    : null; // approximate buy-and-hold excess
-
   return (
-    <div className="space-y-4">
-      {/* ── Hero intro for new users ── */}
-      {!result && !loading && (
-        <div className="rounded-xl border border-zinc-800/60 bg-gradient-to-br from-zinc-900 to-zinc-950 p-6">
-          <div className="flex items-start gap-4">
-            <div className="p-3 rounded-xl bg-indigo-500/15 border border-indigo-500/20 flex-shrink-0">
-              <FlaskConical className="h-6 w-6 text-indigo-400" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-zinc-100 mb-1">Paper Trading Simulator</h2>
-              <p className="text-sm text-zinc-400 leading-relaxed max-w-xl">
-                Test the AI strategy with <strong className="text-zinc-200">virtual money</strong> before risking a single real dollar.
-                Choose how much fake cash to start with, select a time window, and see exactly how the strategy would have performed on historical data.
-              </p>
-              <div className="flex flex-wrap gap-3 mt-4 text-xs text-zinc-500">
-                <span className="flex items-center gap-1"><span className="text-emerald-400">✓</span> No real money at risk</span>
-                <span className="flex items-center gap-1"><span className="text-emerald-400">✓</span> Real historical prices</span>
-                <span className="flex items-center gap-1"><span className="text-emerald-400">✓</span> Realistic slippage & commissions</span>
-                <span className="flex items-center gap-1"><span className="text-emerald-400">✓</span> Compare vs. buy-and-hold</span>
-              </div>
-            </div>
-          </div>
+    <div className="space-y-3">
+      {/* Controls */}
+      <div className="panel">
+        <div className="panel-header">
+          <span>Backtest Settings — {symbol}</span>
+          <span className="badge badge-yellow">Paper Money</span>
         </div>
-      )}
-
-      {/* ── Controls ── */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <CardTitle>Backtest Settings</CardTitle>
-            <Badge variant="warning">Paper Money</Badge>
-          </div>
-        </CardHeader>
-        <div className="flex flex-wrap gap-4 items-end">
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] text-zinc-500 uppercase tracking-wide font-medium">Symbol</label>
-            <div className="bg-zinc-800/60 border border-zinc-700/40 rounded-lg px-3 py-2 text-sm text-zinc-200 font-semibold min-w-[80px]">
-              {symbol}
+        <div className="flex flex-wrap gap-3 items-end p-3">
+          <div>
+            <div className="text-[9px] uppercase tracking-wide mb-1" style={{ color: "var(--text-muted)" }}>Starting Cash</div>
+            <div className="flex items-center" style={{ background: "var(--bg-raised)", border: "1px solid var(--border-strong)", borderRadius: 2 }}>
+              <span className="px-2 text-xs" style={{ color: "var(--text-muted)" }}>$</span>
+              <input type="number" value={cash} onChange={e => setCash(e.target.value)} min="1000" max="10000000"
+                className="bg-transparent outline-none text-xs num w-28 py-1.5 pr-2"
+                style={{ color: "var(--text-primary)" }} />
             </div>
           </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="cash-input" className="text-[10px] text-zinc-500 uppercase tracking-wide font-medium">
-              Starting Cash
-            </label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm">$</span>
-              <input
-                id="cash-input"
-                type="number"
-                value={cash}
-                onChange={(e) => setCash(e.target.value)}
-                min="1000"
-                max="10000000"
-                className="bg-zinc-800/60 border border-zinc-700/40 rounded-lg pl-7 pr-3 py-2 text-sm text-zinc-200 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
-                aria-label="Starting cash amount"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] text-zinc-500 uppercase tracking-wide font-medium">Backtest Period</label>
-            <div className="flex gap-1">
-              {PERIODS.map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setPeriod(p)}
-                  aria-pressed={period === p}
-                  className={cn(
-                    "px-2.5 py-2 rounded-lg text-xs font-medium transition-all border",
-                    period === p
-                      ? "bg-indigo-500/30 text-indigo-300 border-indigo-500/40"
-                      : "bg-zinc-800/40 text-zinc-500 border-zinc-700/30 hover:text-zinc-300 hover:border-zinc-600/40"
-                  )}
-                >
+          <div>
+            <div className="text-[9px] uppercase tracking-wide mb-1" style={{ color: "var(--text-muted)" }}>Period</div>
+            <div className="flex gap-0 overflow-hidden" style={{ border: "1px solid var(--border)", borderRadius: 2 }}>
+              {PERIODS.map(p => (
+                <button key={p} onClick={() => setPeriod(p)}
+                  className="px-2.5 py-1.5 text-xs transition-colors"
+                  style={{
+                    background: period === p ? "var(--blue-dim)" : "transparent",
+                    color: period === p ? "var(--blue)" : "var(--text-muted)",
+                    borderRight: "1px solid var(--border)",
+                  }}>
                   {p}
                 </button>
               ))}
             </div>
           </div>
-
-          <button
-            onClick={() => onRun(Number(cash), period)}
-            disabled={loading || Number(cash) < 1000}
-            className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-indigo-500/20"
-            aria-label="Run backtest"
-          >
-            {loading ? (
-              <>
-                <Timer className="h-4 w-4 animate-pulse" />
-                Running… {elapsed}s
-              </>
-            ) : (
-              <>
-                <FlaskConical className="h-4 w-4" />
-                Run Backtest
-              </>
-            )}
+          <button onClick={() => onRun(Number(cash), period)} disabled={loading || Number(cash) < 1000}
+            className="et-btn et-btn-primary flex items-center gap-1.5 disabled:opacity-50">
+            {loading ? <><Timer className="h-3 w-3 animate-pulse" />Running… {elapsed}s</>
+                     : <><FlaskConical className="h-3 w-3" />Run Backtest</>}
           </button>
         </div>
-
-        {/* Progress bar during loading */}
         {loading && (
-          <div className="mt-4 space-y-2">
-            <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
-              <div
-                className="h-full bg-indigo-500 rounded-full transition-all duration-1000"
-                style={{ width: `${Math.min(95, (elapsed / 60) * 100)}%` }}
-              />
+          <div className="px-3 pb-3 space-y-1.5">
+            <div className="h-1 w-full overflow-hidden" style={{ background: "var(--bg-active)" }}>
+              <div className="h-full transition-all duration-1000" style={{ width: `${Math.min(95, (elapsed / 60) * 100)}%`, background: "var(--blue)" }} />
             </div>
-            <p className="text-xs text-zinc-500">
-              {elapsed < 10 ? "Fetching historical data…"
-                : elapsed < 25 ? "Training ML model on historical data…"
-                : elapsed < 45 ? "Running walk-forward simulation…"
-                : "Almost done — computing final metrics…"}
+            <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              {elapsed < 10 ? "Fetching historical data…" : elapsed < 25 ? "Training ML model…" : elapsed < 45 ? "Running walk-forward simulation…" : "Computing metrics…"}
             </p>
           </div>
         )}
-      </Card>
+      </div>
 
-      {/* ── Results ── */}
       {result && !loading && (
         <>
-          {/* Headline stat */}
-          <div className={cn(
-            "rounded-xl border p-4",
-            result.total_return >= 0
-              ? "bg-emerald-500/5 border-emerald-500/20"
-              : "bg-rose-500/5 border-rose-500/20"
-          )}>
+          {/* Headline */}
+          <div className="panel p-3" style={{ borderColor: result.total_return >= 0 ? "var(--green)" : "var(--red)" }}>
             <div className="flex items-center justify-between mb-3">
               <div>
-                <div className="text-sm text-zinc-400 mb-0.5">Strategy Return over {period}</div>
-                <div className={cn("text-3xl font-black", result.total_return >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                <div className="text-[10px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>Strategy Return — {period}</div>
+                <div className="text-3xl font-black num mt-0.5" style={{ color: result.total_return >= 0 ? "var(--green)" : "var(--red)" }}>
                   {fmtPct(result.total_return)}
                 </div>
-                <div className="text-xs text-zinc-500 mt-1">
+                <div className="text-[10px] mt-1" style={{ color: "var(--text-secondary)" }}>
                   {fmtMoney(result.initial_cash)} → {fmtMoney(result.final_value)} · {result.n_trades} trades
                 </div>
               </div>
-              <TrendingUp className={cn("h-10 w-10", result.total_return >= 0 ? "text-emerald-500/30" : "text-rose-500/30")} />
             </div>
-            {/* Buy-and-hold comparison */}
             {result.bnh_return !== undefined && (
-              <div className="grid grid-cols-3 gap-2 pt-3 border-t border-zinc-800/60">
-                <div className="text-center">
-                  <div className="text-[10px] text-zinc-500 uppercase tracking-wide mb-0.5">Buy & Hold</div>
-                  <div className={cn("text-sm font-bold", result.bnh_return >= 0 ? "text-indigo-400" : "text-rose-400")}>
-                    {fmtPct(result.bnh_return)}
+              <div className="grid grid-cols-3 gap-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+                {[
+                  { label: "Buy & Hold", value: fmtPct(result.bnh_return), color: "var(--blue)" },
+                  { label: "Alpha",      value: result.alpha !== undefined ? fmtPct(result.alpha) : "—", color: (result.alpha ?? 0) >= 0 ? "var(--green)" : "var(--red)" },
+                  { label: "Win Rate",   value: `${result.win_rate}%`, color: result.win_rate > 50 ? "var(--green)" : "var(--text-secondary)" },
+                ].map(s => (
+                  <div key={s.label} className="text-center">
+                    <div className="text-[9px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>{s.label}</div>
+                    <div className="text-sm font-bold num" style={{ color: s.color }}>{s.value}</div>
                   </div>
-                </div>
-                <div className="text-center border-x border-zinc-800/60">
-                  <div className="text-[10px] text-zinc-500 uppercase tracking-wide mb-0.5">Alpha</div>
-                  <div className={cn("text-sm font-bold", (result.alpha ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                    {result.alpha !== undefined ? fmtPct(result.alpha) : "—"}
-                  </div>
-                </div>
-                <div className="text-center">
-                  <div className="text-[10px] text-zinc-500 uppercase tracking-wide mb-0.5">Win Rate</div>
-                  <div className={cn("text-sm font-bold", result.win_rate > 50 ? "text-emerald-400" : "text-zinc-400")}>
-                    {result.win_rate}%
-                  </div>
-                </div>
+                ))}
               </div>
             )}
           </div>
 
           {/* Stats grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatCard label="Sharpe Ratio" value={fmt(result.sharpe)} good={result.sharpe > 1} tooltip={TOOLTIPS.sharpe} />
-            <StatCard label="Sortino Ratio" value={fmt(result.sortino)} good={result.sortino > 1.5} tooltip={TOOLTIPS.sortino} />
-            <StatCard label="Max Drawdown" value={fmtPct(-result.max_drawdown)} bad tooltip={TOOLTIPS.maxDD} />
-            <StatCard label="Win Rate" value={`${result.win_rate}%`} good={result.win_rate > 50} tooltip={TOOLTIPS.winRate} />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {[
+              { label: "Sharpe",     value: fmt(result.sharpe),     good: result.sharpe > 1,      tip: TIPS.sharpe },
+              { label: "Sortino",    value: fmt(result.sortino),    good: result.sortino > 1.5,   tip: TIPS.sortino },
+              { label: "Max DD",     value: fmtPct(-result.max_drawdown), bad: true,              tip: TIPS.maxDD },
+              { label: "Win Rate",   value: `${result.win_rate}%`,  good: result.win_rate > 50,   tip: TIPS.winRate },
+              { label: "Avg Win",    value: fmtMoney(result.avg_win),   good: result.avg_win > 0 },
+              { label: "Avg Loss",   value: fmtMoney(result.avg_loss),  bad: true },
+              { label: "Slippage",   value: `${result.avg_slippage_bps} bps`, tip: TIPS.slippage },
+              { label: "Trades",     value: String(result.n_trades) },
+            ].map(s => (
+              <div key={s.label} className="panel p-2 flex flex-col gap-0.5">
+                <div className="flex items-center gap-1 text-[9px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+                  {s.label} {s.tip && <InfoTooltip content={s.tip} />}
+                </div>
+                <div className="text-base font-bold num" style={{ color: s.bad ? "var(--red)" : s.good ? "var(--green)" : "var(--text-primary)" }}>
+                  {s.value}
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatCard label="Avg Win" value={fmtMoney(result.avg_win)} good={result.avg_win > 0} />
-            <StatCard label="Avg Loss" value={fmtMoney(result.avg_loss)} bad />
-            <StatCard label="Avg Slippage" value={`${result.avg_slippage_bps} bps`} neutral tooltip={TOOLTIPS.slippage} />
-            <StatCard label="Total Trades" value={String(result.n_trades)} neutral />
-          </div>
+
+          {/* Plain-English interpretation */}
+          <BacktestVerdict result={result} cash={Number(cash)} />
 
           {/* Equity curve */}
           <Card>
             <CardHeader>
-              <div>
-                <CardTitle>Portfolio Equity Curve</CardTitle>
-                <p className="text-[10px] text-zinc-500 mt-0.5">Cumulative return % vs. time</p>
-              </div>
-              <span className={cn("text-lg font-bold", result.total_return >= 0 ? "text-emerald-400" : "text-rose-400")}>
+              <CardTitle>Equity Curve vs Buy &amp; Hold</CardTitle>
+              <span className="num font-bold text-sm" style={{ color: result.total_return >= 0 ? "var(--green)" : "var(--red)" }}>
                 {fmtPct(result.total_return)}
               </span>
             </CardHeader>
             <EquityChart snapshots={result.snapshots} initialCash={result.initial_cash} />
           </Card>
 
-          {/* Risk warning if drawdown is bad */}
           {result.max_drawdown > 15 && (
-            <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm">
-              <AlertTriangle className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
-              <p className="text-amber-300/80">
-                This strategy experienced a <strong>{result.max_drawdown.toFixed(1)}% drawdown</strong> during this period.
-                That means a ${(result.initial_cash * result.max_drawdown / 100).toFixed(0)} paper loss at its worst point.
-                Consider this before using real money.
-              </p>
+            <div className="flex items-start gap-2 p-3 text-xs"
+              style={{ background: "var(--yellow-dim)", border: "1px solid var(--yellow)44", borderRadius: 2, color: "var(--yellow)" }}>
+              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>
+                {result.max_drawdown.toFixed(1)}% max drawdown (${(result.initial_cash * result.max_drawdown / 100).toFixed(0)} paper loss at worst point). Consider carefully before using real capital.
+              </span>
             </div>
           )}
 
           {/* Trade log */}
           {result.fills.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Trade Log</CardTitle>
-                <span className="text-xs text-zinc-500">
-                  {result.fills.length} total fills · showing last 20
-                </span>
-              </CardHeader>
-              <div className="overflow-auto max-h-64 -mx-1">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-zinc-500 border-b border-zinc-800">
-                      {["Date", "Action", "Shares", "Price", "Value", "Slippage"].map(h => (
-                        <th key={h} className={cn("py-2 font-medium", h === "Date" || h === "Action" ? "text-left px-2" : "text-right px-2")}>
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
+            <div className="panel">
+              <div className="panel-header">
+                <span>Trade Log</span>
+                <span style={{ color: "var(--text-muted)", fontSize: "10px" }}>{result.fills.length} fills · last 20</span>
+              </div>
+              <div style={{ maxHeight: "240px", overflowY: "auto" }}>
+                <table className="t-table">
+                  <thead><tr><th>Date</th><th>Side</th><th>Qty</th><th>Price</th><th>Value</th><th>Slip (bps)</th></tr></thead>
                   <tbody>
                     {result.fills.slice(-20).reverse().map((f, i) => (
-                      <tr key={i} className="border-b border-zinc-800/40 hover:bg-zinc-800/20 transition-colors">
-                        <td className="py-1.5 px-2 text-zinc-500">{f.ts.slice(0, 10)}</td>
-                        <td className={cn("py-1.5 px-2 font-semibold", f.side === "buy" ? "text-emerald-400" : "text-rose-400")}>
-                          {f.side === "buy" ? "BUY ↑" : "SELL ↓"}
-                        </td>
-                        <td className="py-1.5 px-2 text-right text-zinc-300">{f.qty}</td>
-                        <td className="py-1.5 px-2 text-right text-zinc-300">${fmt(f.price)}</td>
-                        <td className="py-1.5 px-2 text-right text-zinc-400">{fmtMoney(f.nv)}</td>
-                        <td className="py-1.5 px-2 text-right text-zinc-600">{fmt(f.slip, 1)} bps</td>
+                      <tr key={i}>
+                        <td style={{ textAlign: "left", paddingLeft: "12px", color: "var(--text-muted)" }}>{f.ts.slice(0, 10)}</td>
+                        <td><span className="font-semibold" style={{ color: f.side === "buy" ? "var(--green)" : "var(--red)" }}>{f.side.toUpperCase()}</span></td>
+                        <td className="num">{f.qty}</td>
+                        <td className="num">${fmt(f.price)}</td>
+                        <td className="num" style={{ color: "var(--text-secondary)" }}>{fmtMoney(f.nv)}</td>
+                        <td className="num" style={{ color: "var(--text-muted)" }}>{fmt(f.slip, 1)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            </Card>
+            </div>
           )}
         </>
       )}
     </div>
-  );
-}
-
-function StatCard({ label, value, good, bad, neutral, tooltip }: {
-  label: string; value: string; good?: boolean; bad?: boolean; neutral?: boolean; tooltip?: string;
-}) {
-  const color = neutral ? "text-zinc-300" : bad ? "text-rose-400" : good ? "text-emerald-400" : "text-zinc-300";
-  return (
-    <Card className="flex flex-col gap-1">
-      <div className="flex items-center gap-1">
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wide">{label}</div>
-        {tooltip && <InfoTooltip content={tooltip} />}
-      </div>
-      <div className={cn("text-lg font-bold", color)}>{value}</div>
-    </Card>
   );
 }

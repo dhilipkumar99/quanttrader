@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { CheckCircle, XCircle, AlertCircle, X } from "lucide-react";
-import { cn } from "@/lib/utils";
 
 export type ToastType = "success" | "error" | "info";
 
@@ -35,7 +34,7 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-6 right-4 z-50 flex flex-col gap-1.5 pointer-events-none">
       {toasts.map(t => (
         <ToastItem key={t.id} toast={t} onDismiss={() => setToasts(prev => prev.filter(x => x.id !== t.id))} />
       ))}
@@ -44,25 +43,26 @@ export function ToastContainer() {
 }
 
 function ToastItem({ toast: t, onDismiss }: { toast: ToastMessage; onDismiss: () => void }) {
-  const styles = {
-    success: { bg: "bg-emerald-900/90 border-emerald-600/50", Icon: CheckCircle, color: "text-emerald-300" },
-    error:   { bg: "bg-rose-900/90 border-rose-600/50",       Icon: XCircle,     color: "text-rose-300" },
-    info:    { bg: "bg-zinc-800/90 border-zinc-600/50",        Icon: AlertCircle, color: "text-zinc-300" },
+  const cfg = {
+    success: { bg: "var(--green-dim)",  border: "var(--green)", Icon: CheckCircle, color: "var(--green)" },
+    error:   { bg: "var(--red-dim)",    border: "var(--red)",   Icon: XCircle,     color: "var(--red)" },
+    info:    { bg: "var(--bg-raised)",  border: "var(--border-strong)", Icon: AlertCircle, color: "var(--text-secondary)" },
   }[t.type];
 
   return (
     <div
-      className={cn(
-        "pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border backdrop-blur-sm shadow-2xl",
-        "text-sm font-medium max-w-sm",
-        "animate-in slide-in-from-bottom-2 fade-in-0 duration-200",
-        styles.bg
-      )}
+      className="pointer-events-auto flex items-center gap-2 px-3 py-2 text-xs font-medium max-w-xs animate-in slide-in-from-bottom-2 fade-in-0 duration-200"
+      style={{
+        background: cfg.bg,
+        border: `1px solid ${cfg.border}`,
+        borderRadius: "3px",
+        color: "var(--text-primary)",
+      }}
     >
-      <styles.Icon className={cn("h-4 w-4 flex-shrink-0", styles.color)} />
-      <span className="text-zinc-200 flex-1">{t.message}</span>
-      <button onClick={onDismiss} className="text-zinc-500 hover:text-zinc-300 transition-colors">
-        <X className="h-3.5 w-3.5" />
+      <cfg.Icon className="h-3.5 w-3.5 flex-shrink-0" style={{ color: cfg.color }} />
+      <span className="flex-1">{t.message}</span>
+      <button onClick={onDismiss} style={{ color: "var(--text-muted)" }} className="hover:text-white transition-colors">
+        <X className="h-3 w-3" />
       </button>
     </div>
   );

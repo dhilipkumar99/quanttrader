@@ -9,11 +9,8 @@ interface CardProps {
 export function Card({ children, className, glow }: CardProps) {
   return (
     <div
-      className={cn(
-        "rounded-xl border border-zinc-800/60 bg-zinc-900/50 backdrop-blur-sm p-4",
-        glow && "ring-1 ring-indigo-500/20 shadow-lg shadow-indigo-500/5",
-        className
-      )}
+      className={cn("panel p-3", glow && "ring-1", className)}
+      style={glow ? { boxShadow: "0 0 0 1px var(--blue), 0 4px 20px rgba(59,130,246,0.08)" } : undefined}
     >
       {children}
     </div>
@@ -22,7 +19,7 @@ export function Card({ children, className, glow }: CardProps) {
 
 export function CardHeader({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("flex items-center justify-between mb-3", className)}>
+    <div className={cn("panel-header -mx-3 -mt-3 mb-3", className)}>
       {children}
     </div>
   );
@@ -30,8 +27,9 @@ export function CardHeader({ children, className }: { children: React.ReactNode;
 
 export function CardTitle({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <h3 className={cn("text-sm font-semibold text-zinc-300 uppercase tracking-wider", className)}>
+    <span className={cn("text-[11px] font-semibold uppercase tracking-widest", className)}
+      style={{ color: "var(--text-secondary)" }}>
       {children}
-    </h3>
+    </span>
   );
 }

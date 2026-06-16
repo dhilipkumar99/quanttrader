@@ -11,30 +11,22 @@ export function signalLabel(s: SignalDirection): string {
 }
 
 export function signalColor(s: SignalDirection): string {
-  return s === 1
-    ? "text-emerald-400"
-    : s === -1
-    ? "text-rose-400"
-    : "text-zinc-400";
+  return s === 1 ? "var(--green)" : s === -1 ? "var(--red)" : "var(--text-muted)";
 }
 
 export function signalBg(s: SignalDirection): string {
-  return s === 1
-    ? "bg-emerald-500/15 border-emerald-500/30"
-    : s === -1
-    ? "bg-rose-500/15 border-rose-500/30"
-    : "bg-zinc-700/30 border-zinc-600/30";
+  return s === 1 ? "var(--green-dim)" : s === -1 ? "var(--red-dim)" : "var(--bg-active)";
 }
 
 export function regimeColor(r: string): string {
   const map: Record<string, string> = {
-    trending_up:    "text-emerald-400",
-    trending_down:  "text-rose-400",
-    mean_reverting: "text-amber-400",
-    volatile:       "text-orange-400",
-    quiet:          "text-zinc-400",
+    trending_up:    "var(--green)",
+    trending_down:  "var(--red)",
+    mean_reverting: "var(--yellow)",
+    volatile:       "var(--yellow)",
+    quiet:          "var(--text-muted)",
   };
-  return map[r] ?? "text-zinc-400";
+  return map[r] ?? "var(--text-muted)";
 }
 
 export function fmt(n: number, dp = 2): string {

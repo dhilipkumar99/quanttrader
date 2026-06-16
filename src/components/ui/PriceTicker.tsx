@@ -1,7 +1,7 @@
 "use client";
 
 import { useLivePrice } from "@/hooks/useLivePrice";
-import { cn, fmtPct } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import { Activity } from "lucide-react";
 
@@ -27,23 +27,33 @@ export function PriceTicker({ symbol, initialPrice, initialChangePct }: Props) {
   }, [live.price]);
 
   return (
-    <div className="flex flex-wrap items-baseline gap-3 mb-1">
-      <h1 className="text-2xl font-black text-zinc-100">{symbol}</h1>
+    <div
+      className={cn(
+        "panel flex flex-wrap items-baseline gap-3 px-3 py-2",
+        flash === "up"   && "flash-up",
+        flash === "down" && "flash-down"
+      )}
+    >
+      <span className="text-sm font-bold font-mono" style={{ color: "var(--text-secondary)" }}>{symbol}</span>
       <span
-        className={cn(
-          "text-2xl font-bold transition-colors duration-300",
-          flash === "up"   ? "text-emerald-300" :
-          flash === "down" ? "text-rose-300"    : "text-zinc-200"
-        )}
+        className="text-xl font-bold num"
+        style={{
+          color: flash === "up"   ? "var(--green)" :
+                 flash === "down" ? "var(--red)"   : "var(--text-primary)",
+          transition: "color 0.3s",
+        }}
       >
-        ${price.toFixed(2)}
+        ${(price ?? 0).toFixed(2)}
       </span>
-      <span className={cn("text-sm font-semibold", changePct >= 0 ? "text-emerald-400" : "text-rose-400")}>
-        {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
+      <span
+        className="text-sm font-semibold num"
+        style={{ color: (changePct ?? 0) >= 0 ? "var(--green)" : "var(--red)" }}
+      >
+        {(changePct ?? 0) >= 0 ? "+" : ""}{(changePct ?? 0).toFixed(2)}%
       </span>
       {live.price > 0 && (
-        <span className="flex items-center gap-1 text-[10px] text-zinc-600 ml-1">
-          <Activity className="h-2.5 w-2.5 text-emerald-600 animate-pulse" />
+        <span className="flex items-center gap-1 text-[10px] ml-1" style={{ color: "var(--text-muted)" }}>
+          <Activity className="h-2.5 w-2.5 animate-pulse" style={{ color: "var(--green)" }} />
           Live
         </span>
       )}

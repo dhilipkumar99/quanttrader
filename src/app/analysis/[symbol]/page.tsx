@@ -1,13 +1,11 @@
 import { Metadata } from "next";
 import Link from "next/link";
-import { BarChart2, ArrowLeft, ExternalLink, TrendingUp, TrendingDown, Minus } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { BarChart2, ArrowLeft, ExternalLink } from "lucide-react";
 
 interface Props {
   params: Promise<{ symbol: string }>;
 }
 
-// Fetch from the Python engine at build/request time (ISR)
 async function getAnalysis(symbol: string) {
   try {
     const base = process.env.VERCEL_URL
@@ -42,14 +40,16 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
-const SIGNAL_LABEL: Record<number, string> = { 1: "LONG ▲", "-1": "SHORT ▼", 0: "FLAT ■" };
-const SIGNAL_COLOR: Record<number, string> = {
-  1: "text-emerald-400", "-1": "text-rose-400", 0: "text-zinc-400"
-};
-const REGIME_COLOR: Record<string, string> = {
-  trending_up: "text-emerald-400", trending_down: "text-rose-400",
-  mean_reverting: "text-amber-400", volatile: "text-orange-400", quiet: "text-zinc-400",
-};
+function signalColor(s: number): string {
+  return s === 1 ? "#1A6B4A" : s === -1 ? "#C41E3A" : "#6B6B6B";
+}
+function regimeColor(r: string): string {
+  const map: Record<string, string> = {
+    trending_up: "#1A6B4A", trending_down: "#C41E3A",
+    mean_reverting: "#8B6914", volatile: "#8B6914", quiet: "#6B6B6B",
+  };
+  return map[r] ?? "#6B6B6B";
+}
 
 export default async function AnalysisSharePage({ params }: Props) {
   const { symbol } = await params;
@@ -57,109 +57,142 @@ export default async function AnalysisSharePage({ params }: Props) {
   const data = await getAnalysis(sym);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <header className="border-b border-zinc-800/60 bg-zinc-950/80 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-2xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
-              <BarChart2 className="h-4 w-4 text-white" />
+    <div style={{ minHeight: "100vh", background: "#F4F2EE", fontFamily: "'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif" }}>
+      {/* Nav */}
+      <header style={{ background: "#0B1F3A", borderBottom: "2px solid #C41E3A", position: "sticky", top: 0, zIndex: 40 }}>
+        <div style={{ maxWidth: "640px", margin: "0 auto", padding: "0 24px", height: "48px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Link href="/" style={{ display: "flex", alignItems: "center", gap: "10px", textDecoration: "none" }}>
+            <div style={{ background: "rgba(196,30,58,0.2)", border: "1px solid rgba(196,30,58,0.4)", padding: "6px", display: "flex" }}>
+              <BarChart2 style={{ width: "16px", height: "16px", color: "#C41E3A" }} />
             </div>
-            <span className="text-sm font-bold text-zinc-100">QuantTrader</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 0, lineHeight: 1 }}>
+              <span style={{ fontFamily: "'Times New Roman', Times, serif", fontSize: "14px", fontWeight: 600, color: "#FFFFFF", letterSpacing: "0.02em" }}>
+                QuantTrader
+              </span>
+              <span style={{ fontSize: "8px", fontWeight: 400, color: "rgba(255,255,255,0.4)", letterSpacing: "0.2em", textTransform: "uppercase", marginTop: "1px" }}>
+                ML-POWERED
+              </span>
+            </div>
           </Link>
-          <Link href="/" className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-200 transition-colors">
-            <ArrowLeft className="h-3.5 w-3.5" /> Live App
+          <Link href="/" style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "rgba(255,255,255,0.5)", textDecoration: "none", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+            <ArrowLeft style={{ width: "12px", height: "12px" }} /> Live App
           </Link>
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-6 py-10 space-y-6">
+      <main style={{ maxWidth: "640px", margin: "0 auto", padding: "40px 24px", display: "flex", flexDirection: "column", gap: "16px" }}>
         {!data ? (
-          <div className="text-center py-20 space-y-3">
-            <div className="text-zinc-600 text-4xl font-black">{sym}</div>
-            <p className="text-zinc-500">Could not load analysis. The market may be closed or the ticker invalid.</p>
-            <Link href={`/?symbol=${sym}`} className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-semibold mt-2">
+          <div style={{ textAlign: "center", padding: "80px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+            <div style={{ fontFamily: "'Times New Roman', Times, serif", fontSize: "48px", fontWeight: 700, color: "#D0CAC0" }}>{sym}</div>
+            <p style={{ color: "#6B6B6B", fontSize: "14px" }}>Could not load analysis. The market may be closed or the ticker invalid.</p>
+            <Link href={`/?symbol=${sym}`} style={{
+              display: "inline-flex", alignItems: "center", gap: "8px",
+              padding: "8px 18px", background: "#C41E3A", color: "#fff",
+              textDecoration: "none", fontSize: "12px", fontWeight: 600,
+              textTransform: "uppercase", letterSpacing: "0.1em", marginTop: "8px",
+            }}>
               Try in Live App
             </Link>
           </div>
         ) : (
           <>
-            {/* Hero */}
-            <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/60 p-6 space-y-1">
-              <div className="text-xs text-zinc-500 uppercase tracking-wider mb-2">QuantTrader AI Analysis</div>
-              <div className="flex items-baseline gap-3 flex-wrap">
-                <h1 className="text-3xl font-black text-zinc-100">{data.symbol}</h1>
-                <span className="text-2xl font-bold text-zinc-200">${data.price?.toFixed(2)}</span>
-                <span className={cn("text-sm font-semibold", data.change_pct >= 0 ? "text-emerald-400" : "text-rose-400")}>
+            {/* Hero card */}
+            <div style={{ background: "#FFFFFF", border: "1px solid #D0CAC0", borderTop: "3px solid #C41E3A", padding: "24px" }}>
+              <div style={{ fontSize: "9px", fontWeight: 600, letterSpacing: "0.2em", textTransform: "uppercase", color: "#C41E3A", marginBottom: "10px", fontFamily: "'Palatino Linotype', Palatino, serif" }}>
+                QuantTrader — AI Analysis
+              </div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: "12px", flexWrap: "wrap", marginBottom: "16px" }}>
+                <h1 style={{ fontFamily: "'Times New Roman', Times, serif", fontSize: "32px", fontWeight: 700, color: "#0B1F3A", margin: 0 }}>
+                  {data.symbol}
+                </h1>
+                <span style={{ fontFamily: "monospace", fontSize: "22px", fontWeight: 700, color: "#1A1A1A" }}>
+                  ${data.price?.toFixed(2)}
+                </span>
+                <span style={{ fontFamily: "monospace", fontSize: "13px", fontWeight: 600, color: data.change_pct >= 0 ? "#1A6B4A" : "#C41E3A" }}>
                   {data.change_pct >= 0 ? "+" : ""}{data.change_pct?.toFixed(2)}%
                 </span>
               </div>
-              <div className="flex items-center gap-4 mt-3">
+              <div style={{ display: "flex", gap: "28px", flexWrap: "wrap" }}>
                 <div>
-                  <div className="text-[10px] text-zinc-500 uppercase tracking-wide mb-0.5">Signal</div>
-                  <div className={cn("text-2xl font-black", SIGNAL_COLOR[data.composite_signal])}>
-                    {SIGNAL_LABEL[data.composite_signal] ?? "—"}
+                  <div style={{ fontSize: "9px", color: "#6B6B6B", textTransform: "uppercase", letterSpacing: "0.16em", marginBottom: "4px" }}>Signal</div>
+                  <div style={{ fontFamily: "monospace", fontSize: "22px", fontWeight: 700, color: signalColor(data.composite_signal) }}>
+                    {data.composite_signal === 1 ? "▲ LONG" : data.composite_signal === -1 ? "▼ SHORT" : "■ FLAT"}
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-500 uppercase tracking-wide mb-0.5">Confidence</div>
-                  <div className="text-xl font-bold text-zinc-200">
+                  <div style={{ fontSize: "9px", color: "#6B6B6B", textTransform: "uppercase", letterSpacing: "0.16em", marginBottom: "4px" }}>Confidence</div>
+                  <div style={{ fontFamily: "monospace", fontSize: "22px", fontWeight: 700, color: "#0B1F3A" }}>
                     {((data.composite_confidence ?? 0) * 100).toFixed(1)}%
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-500 uppercase tracking-wide mb-0.5">Regime</div>
-                  <div className={cn("text-sm font-semibold capitalize", REGIME_COLOR[data.regime] ?? "text-zinc-400")}>
+                  <div style={{ fontSize: "9px", color: "#6B6B6B", textTransform: "uppercase", letterSpacing: "0.16em", marginBottom: "4px" }}>Regime</div>
+                  <div style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "14px", fontWeight: 600, textTransform: "capitalize", color: regimeColor(data.regime) }}>
                     {data.regime?.replace(/_/g, " ")}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Risk grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* Risk metrics */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "10px" }}>
               {[
-                { label: "Sharpe", value: data.risk_metrics?.sharpe?.toFixed(2) },
-                { label: "Sortino", value: data.risk_metrics?.sortino?.toFixed(2) },
-                { label: "MC Profit%", value: `${data.monte_carlo?.prob_positive}%` },
-                { label: "Kelly Size", value: `${data.position_size_pct}%` },
+                { label: "Sharpe Ratio", value: data.risk_metrics?.sharpe?.toFixed(2) },
+                { label: "Sortino Ratio", value: data.risk_metrics?.sortino?.toFixed(2) },
+                { label: "MC Profit Probability", value: `${data.monte_carlo?.prob_positive}%` },
+                { label: "Kelly Position Size", value: `${data.position_size_pct}%` },
               ].map(({ label, value }) => (
-                <div key={label} className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-3">
-                  <div className="text-[10px] text-zinc-500 uppercase tracking-wide">{label}</div>
-                  <div className="text-lg font-bold text-zinc-200 mt-0.5">{value ?? "—"}</div>
+                <div key={label} style={{ background: "#FFFFFF", border: "1px solid #D0CAC0", padding: "14px 16px" }}>
+                  <div style={{ fontSize: "9px", color: "#6B6B6B", textTransform: "uppercase", letterSpacing: "0.16em", marginBottom: "6px" }}>{label}</div>
+                  <div style={{ fontFamily: "monospace", fontSize: "20px", fontWeight: 700, color: "#0B1F3A" }}>{value ?? "—"}</div>
                 </div>
               ))}
             </div>
 
-            {/* Sub signals */}
+            {/* Sub-signals */}
             {data.signals?.length > 0 && (
-              <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-4 space-y-2">
-                <div className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Sub-Signals</div>
-                {data.signals.map((s: any, i: number) => (
-                  <div key={i} className="flex items-center justify-between text-sm py-1.5 border-b border-zinc-800/40 last:border-0">
-                    <span className="text-zinc-400 capitalize">{s.source?.replace(/_/g, " ")}</span>
-                    <span className={cn("font-bold", s.direction === 1 ? "text-emerald-400" : s.direction === -1 ? "text-rose-400" : "text-zinc-400")}>
-                      {s.direction === 1 ? "▲ LONG" : s.direction === -1 ? "▼ SHORT" : "■ FLAT"}
-                    </span>
-                  </div>
-                ))}
+              <div style={{ background: "#FFFFFF", border: "1px solid #D0CAC0" }}>
+                <div style={{ padding: "8px 14px", background: "#F8F6F2", borderBottom: "1px solid #D0CAC0", fontSize: "9px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.16em", color: "#6B6B6B" }}>
+                  Sub-Model Signals
+                </div>
+                <div style={{ padding: "4px 0" }}>
+                  {data.signals.map((s: { source?: string; direction: number; confidence: number }, i: number) => (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "8px 16px", borderBottom: i < data.signals.length - 1 ? "1px solid #D0CAC0" : "none",
+                    }}>
+                      <span style={{ fontSize: "12px", color: "#3D3D3D", textTransform: "capitalize" }}>
+                        {s.source?.replace(/_/g, " ")}
+                      </span>
+                      <span style={{ fontFamily: "monospace", fontSize: "12px", fontWeight: 700, color: signalColor(s.direction) }}>
+                        {s.direction === 1 ? "▲ LONG" : s.direction === -1 ? "▼ SHORT" : "■ FLAT"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
             {/* CTA */}
-            <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-5 text-center space-y-3">
-              <p className="text-sm text-zinc-400">
+            <div style={{ background: "#FFFFFF", border: "1px solid #D0CAC0", borderTop: "3px solid #0B1F3A", padding: "24px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "14px" }}>
+              <p style={{ fontSize: "13px", color: "#6B6B6B", lineHeight: 1.6, maxWidth: "420px" }}>
                 This is a snapshot. Open the live app to get real-time signals, run a backtest, and track your portfolio.
               </p>
               <Link
                 href={`/?symbol=${sym}`}
-                className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition-all"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "8px",
+                  padding: "9px 20px", background: "#0B1F3A", color: "#fff",
+                  textDecoration: "none", fontSize: "11px", fontWeight: 600,
+                  textTransform: "uppercase", letterSpacing: "0.12em",
+                }}
               >
-                <ExternalLink className="h-4 w-4" />
+                <ExternalLink style={{ width: "14px", height: "14px" }} />
                 Open Live Analysis
               </Link>
             </div>
 
-            <p className="text-[10px] text-zinc-700 text-center">
+            <p style={{ fontSize: "10px", color: "#A8A09A", textAlign: "center" }}>
               Not financial advice. Past performance does not guarantee future results.
             </p>
           </>

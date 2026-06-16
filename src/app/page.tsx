@@ -1,348 +1,419 @@
 "use client";
 
-import { useEffect, useCallback, Suspense } from "react";
+import { useEffect, useCallback, Suspense, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useTrader } from "@/store/trader";
-import { api } from "@/lib/api";
-import { SearchBar } from "@/components/panels/SearchBar";
-import { WatchlistPanel } from "@/components/panels/WatchlistPanel";
+import { api, type CandlePoint, type ChartCandle, type ScanHorizon } from "@/lib/api";
+
+// Panels
 import { SignalPanel } from "@/components/panels/SignalPanel";
 import { IndicatorsPanel } from "@/components/panels/IndicatorsPanel";
 import { SimulatorPanel } from "@/components/panels/SimulatorPanel";
 import { PortfolioPanel } from "@/components/panels/PortfolioPanel";
+import { MarketOverviewPanel } from "@/components/panels/MarketOverviewPanel";
+import { TradingPanel } from "@/components/panels/TradingPanel";
+import { SP500Scanner } from "@/components/panels/SP500Scanner";
 import { SignalExplainer } from "@/components/panels/SignalExplainer";
-import { MobileNav } from "@/components/panels/MobileNav";
-import { AnalysisSkeleton } from "@/components/ui/Skeleton";
+import { SignalHistoryPanel } from "@/components/panels/SignalHistoryPanel";
+import { ComparisonPanel } from "@/components/panels/ComparisonPanel";
+import { AgentPanel } from "@/components/panels/AgentPanel";
+import { DayTradePicksPanel } from "@/components/panels/DayTradePicksPanel";
+import { TradingCockpit } from "@/components/panels/TradingCockpit";
+import { OptionsPanel } from "@/components/panels/OptionsPanel";
+
+// UI
 import { PriceTicker } from "@/components/ui/PriceTicker";
 import { ToastContainer, toast } from "@/components/ui/Toast";
-import { cn } from "@/lib/utils";
-import { BarChart2, FlaskConical, AlertTriangle, LayoutDashboard } from "lucide-react";
-import Link from "next/link";
+import { AnalysisSkeleton } from "@/components/ui/Skeleton";
+import { TopBar } from "@/components/ui/TopBar";
+import { Sidebar } from "@/components/ui/Sidebar";
+import { StatusBar } from "@/components/ui/StatusBar";
+import { PriceChart } from "@/components/charts/PriceChart";
+import { AlertTriangle, Database, RefreshCw } from "lucide-react";
 
-type Tab = "live" | "simulator" | "portfolio";
+export type Tab = "analysis" | "simulator" | "portfolio" | "market" | "trading" | "scanner" | "compare" | "agent" | "picks";
 
-const TABS: { id: Tab; label: string; Icon: React.FC<{ className?: string }> }[] = [
-  { id: "live",      label: "Live Analysis",    Icon: BarChart2 },
-  { id: "simulator", label: "Paper Simulator",  Icon: FlaskConical },
-  { id: "portfolio", label: "Portfolio",         Icon: LayoutDashboard },
-];
+// Full-width TwelveData line chart used as fallback while candlestick data loads
+function TdSparkFull({ candles }: { candles: ChartCandle[] }) {
+  if (candles.length < 2) return null;
+  const prices = candles.map(c => c.close);
+  const min = Math.min(...prices) * 0.997;
+  const max = Math.max(...prices) * 1.003;
+  const range = max - min || 1;
+  const W = 900; const H = 200; const pad = { t: 8, b: 24, l: 48, r: 8 };
+  const iW = W - pad.l - pad.r;
+  const iH = H - pad.t - pad.b;
+  const toX = (i: number) => pad.l + (i / (prices.length - 1)) * iW;
+  const toY = (p: number) => pad.t + (1 - (p - min) / range) * iH;
+  const path = prices.map((p, i) => `${i === 0 ? "M" : "L"}${toX(i).toFixed(1)} ${toY(p).toFixed(1)}`).join(" ");
+  const areaPath = `${path} L${toX(prices.length - 1).toFixed(1)} ${(pad.t + iH).toFixed(1)} L${pad.l} ${(pad.t + iH).toFixed(1)} Z`;
+  const isGreen = prices[prices.length - 1] >= prices[0];
+  const color = isGreen ? "#1A6B4A" : "#C41E3A";
+  // Y-axis ticks
+  const yTicks = 4;
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => min + (max - min) * (i / yTicks));
+  // X-axis labels (first, mid, last)
+  const xLabels = [0, Math.floor(prices.length / 2), prices.length - 1];
+  return (
+    <div style={{ width: "100%", overflowX: "hidden" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "200px", display: "block" }}>
+        <defs>
+          <linearGradient id="td-area" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.25" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        {/* Y-axis grid + labels */}
+        {tickVals.map((v, i) => {
+          const y = toY(v);
+          return (
+            <g key={i}>
+              <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="rgba(0,0,0,0.06)" strokeWidth="1" />
+              <text x={pad.l - 4} y={y + 3} textAnchor="end" fontSize="9" fill="#9B9280" fontFamily="monospace">
+                ${v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(0)}
+              </text>
+            </g>
+          );
+        })}
+        {/* X-axis labels */}
+        {xLabels.map(i => (
+          <text key={i} x={toX(i)} y={H - 4} textAnchor="middle" fontSize="9" fill="#9B9280" fontFamily="sans-serif">
+            {candles[i]?.date?.slice(0, 10) ?? ""}
+          </text>
+        ))}
+        <path d={areaPath} fill="url(#td-area)" />
+        <path d={path} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+        <circle cx={toX(prices.length - 1)} cy={toY(prices[prices.length - 1])} r="3" fill={color} stroke="white" strokeWidth="1" />
+      </svg>
+    </div>
+  );
+}
+
+function DataSourceBadge({ source }: { source: string }) {
+  const isYF = source.toLowerCase().includes("yahoo");
+  const isTD = source.toLowerCase().includes("twelvedata");
+  const isCache = source.toLowerCase().includes("cache");
+  const color = isCache
+    ? { border: "#9B9280", text: "#6B5F52", bg: "rgba(155,146,128,0.08)" }
+    : isTD
+    ? { border: "#B45309", text: "#92400E", bg: "rgba(180,83,9,0.08)" }
+    : isYF
+    ? { border: "#1A6B4A", text: "#14532D", bg: "rgba(26,107,74,0.08)" }
+    : { border: "#9B9280", text: "#6B5F52", bg: "rgba(155,146,128,0.08)" };
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: "4px",
+      padding: "2px 8px", borderRadius: "999px",
+      border: `1px solid ${color.border}`,
+      background: color.bg, color: color.text,
+      fontSize: "11px", fontWeight: 500, letterSpacing: "0.01em",
+    }}>
+      <Database size={10} />
+      {source}
+    </span>
+  );
+}
 
 function AppInner() {
   const searchParams = useSearchParams();
-  const router       = useRouter();
+  const router = useRouter();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const {
     activeSymbol, activePeriod, activeTab,
-    analysis, backtest, watchlist,
+    analysis, backtest,
     loading, backtestLoading, error,
+    pinnedSymbols, portfolioCapital,
     setActiveSymbol, setActivePeriod, setActiveTab,
     setAnalysis, setBacktest, setWatchlist,
     setLoading, setBacktestLoading, setError,
   } = useTrader();
 
-  // Honour ?symbol= query param for shareable links
+  const [candles, setCandles] = useState<CandlePoint[]>([]);
+  const [tdCandles, setTdCandles] = useState<ChartCandle[] | null>(null);
+  const [dataSourceBadge, setDataSourceBadge] = useState<string | null>(null);
+  const [optionsHorizon, setOptionsHorizon] = useState<ScanHorizon>("day");
+
   useEffect(() => {
     const sym = searchParams.get("symbol");
     if (sym && sym.toUpperCase() !== activeSymbol) {
       setActiveSymbol(sym.toUpperCase());
       setAnalysis(null);
     }
+    const tab = searchParams.get("tab") as Tab | null;
+    if (tab) setActiveTab(tab);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Dynamic <title>
   useEffect(() => {
     document.title = analysis
-      ? `${analysis.symbol} – $${analysis.price.toFixed(2)} · QuantTrader`
-      : "QuantTrader – ML-Powered Systematic Trading";
+      ? `${analysis.symbol} $${analysis.price.toFixed(2)} · QuantTrader Pro`
+      : "QuantTrader Pro";
   }, [analysis]);
 
   const fetchAnalysis = useCallback(async (sym: string, period: string) => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const data = await api.analyze(sym, period);
       setAnalysis(data);
-      toast(`Analysis complete for ${sym}`, "success");
+      // Show data-source notification
+      const src = data.data_source ?? "Yahoo Finance";
+      setDataSourceBadge(src);
+      const isCached = src.toLowerCase().includes("cache");
+      const isTD = src.toLowerCase().includes("twelvedata");
+      toast(
+        `${sym} ready · Data: ${src}`,
+        isCached ? "info" : isTD ? "info" : "success"
+      );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
-      const friendly = msg.includes("timeout")
-        ? `${sym} analysis timed out. Yahoo Finance may be slow — try again in a moment.`
-        : msg.includes("not found") || msg.includes("No data")
-        ? `"${sym}" wasn't found. Double-check the ticker symbol and try again.`
-        : `Could not analyse ${sym}. ${msg}`;
-      setError(friendly);
-      toast(friendly, "error");
-    } finally {
-      setLoading(false);
-    }
+      const friendly = msg.includes("timeout") ? `${sym} timed out — try again` : `${sym}: ${msg}`;
+      setError(friendly); toast(friendly, "error");
+    } finally { setLoading(false); }
   }, [setLoading, setError, setAnalysis]);
 
-  const fetchWatchlist = useCallback(async () => {
+  const fetchWatchlist = useCallback(async (syms: string[]) => {
+    if (!syms.length) { setWatchlist([]); return; }
     try {
-      const data = await api.watchlist();
-      setWatchlist(data.watchlist);
-    } catch {
-      // watchlist is non-critical
-    }
+      const d = await api.watchlist(syms);
+      setWatchlist(d.watchlist);
+    } catch { /* non-critical */ }
   }, [setWatchlist]);
 
   const runBacktest = useCallback(async (cash: number, period: string) => {
-    setBacktestLoading(true);
-    setError(null);
+    setBacktestLoading(true); setError(null);
     try {
       const data = await api.backtest(activeSymbol, period, cash);
-      setBacktest(data);
-      toast(`Backtest complete for ${activeSymbol}`, "success");
+      setBacktest(data); toast(`Backtest done for ${activeSymbol}`, "success");
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
-      const friendly = msg.includes("timeout")
-        ? "Backtest timed out — try a shorter period like 6mo or 1y."
-        : `Backtest failed for ${activeSymbol}. ${msg}`;
-      setError(friendly);
-      toast(friendly, "error");
-    } finally {
-      setBacktestLoading(false);
-    }
+      const msg = e instanceof Error ? e.message : "Unknown";
+      setError(msg); toast(msg, "error");
+    } finally { setBacktestLoading(false); }
   }, [activeSymbol, setBacktestLoading, setError, setBacktest]);
 
   useEffect(() => {
     fetchAnalysis(activeSymbol, activePeriod);
+    // Fetch candles in parallel — TwelveData cache is instant if swept, yfinance is fallback
+    setCandles([]);
+    setTdCandles(null);
+    api.candles(activeSymbol, activePeriod)
+      .then(d => setCandles(d.candles))
+      .catch(() => {});
+    // Also try SQLite TwelveData cache — shows chart immediately if already swept
+    const tdPeriod = activePeriod === "1w" || activePeriod === "5d" ? "1w"
+                   : activePeriod === "3mo" || activePeriod === "1mo" ? "3mo" : "6mo";
+    api.charts.forSymbol(activeSymbol, tdPeriod as "6mo" | "3mo" | "1w")
+      .then(d => setTdCandles(d.candles))
+      .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSymbol, activePeriod]);
 
+  // Refresh quotes only for the user's pinned symbols
   useEffect(() => {
-    fetchWatchlist();
-    const id = setInterval(fetchWatchlist, 120_000);
+    fetchWatchlist(pinnedSymbols);
+    if (!pinnedSymbols.length) return;
+    const id = setInterval(() => fetchWatchlist(pinnedSymbols), 120_000);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [pinnedSymbols]);
 
-  const handleSymbol = (sym: string) => {
-    setActiveSymbol(sym);
-    setAnalysis(null);
-    setBacktest(null);
+  const handleSymbol = useCallback((sym: string) => {
+    setActiveSymbol(sym); setAnalysis(null); setBacktest(null);
     router.replace(`/?symbol=${sym}`, { scroll: false });
-  };
+  }, [setActiveSymbol, setAnalysis, setBacktest, router]);
+
+  const handleTabChange = useCallback((tab: Tab) => {
+    setActiveTab(tab);
+    router.replace(`/?symbol=${activeSymbol}&tab=${tab}`, { scroll: false });
+  }, [activeSymbol, setActiveTab, router]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="flex flex-col h-screen overflow-hidden" style={{ background: "var(--bg-base)" }}>
       <ToastContainer />
 
-      {/* ── Header ── */}
-      <header className="sticky top-0 z-40 border-b border-zinc-800/60 bg-zinc-950/80 backdrop-blur-md">
-        <div className="max-w-[1600px] mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center flex-shrink-0">
-              <BarChart2 className="h-4 w-4 text-white" />
+      {/* Top bar */}
+      <TopBar
+        symbol={activeSymbol}
+        onSymbolChange={handleSymbol}
+        period={activePeriod}
+        onPeriodChange={(p) => { setActivePeriod(p); setAnalysis(null); }}
+        activeTab={activeTab as Tab}
+        onTabChange={handleTabChange}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed(c => !c)}
+      />
+
+      {/* Body = sidebar + content */}
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          activeTab={activeTab as Tab}
+          onTabChange={handleTabChange}
+          onSelectSymbol={handleSymbol}
+        />
+
+        {/* Main content */}
+        <main className="flex-1 overflow-y-auto overflow-x-hidden" style={{ background: "var(--bg-base)" }}>
+          {/* Error banner */}
+          {error && (
+            <div className="flex items-center gap-2 px-4 py-2 text-xs" style={{ background: "var(--red-dim)", borderBottom: "1px solid var(--red)", color: "var(--red)" }}>
+              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+              <span className="flex-1">{error}</span>
+              <button onClick={() => fetchAnalysis(activeSymbol, activePeriod)} className="underline opacity-70 hover:opacity-100">retry</button>
+              <button onClick={() => setError(null)} className="opacity-70 hover:opacity-100">✕</button>
             </div>
-            <div>
-              <div className="text-sm font-bold text-zinc-100 leading-none">QuantTrader</div>
-              <div className="text-[10px] text-zinc-500 leading-none mt-0.5">ML-Powered Systematic Trading</div>
-            </div>
-          </div>
+          )}
 
-          <SearchBar
-            value={activeSymbol}
-            onChange={handleSymbol}
-            period={activePeriod}
-            onPeriodChange={(p) => { setActivePeriod(p); setAnalysis(null); }}
-          />
-
-          <div className="hidden lg:flex items-center gap-3">
-            <nav className="flex items-center gap-1 text-xs text-zinc-500">
-              <Link href="/how-it-works" className="px-2 py-1 rounded hover:text-zinc-200 transition-colors">How it works</Link>
-              <Link href="/glossary"     className="px-2 py-1 rounded hover:text-zinc-200 transition-colors">Glossary</Link>
-              <Link href="/about"        className="px-2 py-1 rounded hover:text-zinc-200 transition-colors">About</Link>
-            </nav>
-            <div className="flex rounded-lg border border-zinc-700/40 overflow-hidden">
-              {TABS.map(({ id, label, Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => setActiveTab(id as any)}
-                  aria-pressed={activeTab === id}
-                  title={`${label} (Press ${id[0].toUpperCase()})`}
-                  className={cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-all focus-visible:ring-1 focus-visible:ring-indigo-500",
-                    activeTab === id
-                      ? "bg-indigo-600/30 text-indigo-300"
-                      : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
-                  )}
-                >
-                  <Icon className="h-3 w-3" />
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <MobileNav
-            watchlist={watchlist}
-            activeTab={activeTab as any}
-            setActiveTab={(t) => setActiveTab(t as any)}
-            onSelect={handleSymbol}
-          />
-        </div>
-      </header>
-
-      {/* ── Main ── */}
-      <main className="max-w-[1600px] mx-auto px-4 py-5">
-        {error && (
-          <div className="mb-4 flex items-start gap-3 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
-            <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <strong className="block mb-0.5 text-rose-200">Something went wrong</strong>
-              {error}
-            </div>
-            <button
-              onClick={() => fetchAnalysis(activeSymbol, activePeriod)}
-              className="text-xs text-rose-400 underline hover:text-rose-200 flex-shrink-0"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        <div className="flex gap-5">
-          {/* Sidebar watchlist */}
-          <aside className="w-56 flex-shrink-0 hidden lg:block">
-            <WatchlistPanel items={watchlist} onSelect={handleSymbol} />
-          </aside>
-
-          <div className="flex-1 min-w-0 space-y-5">
-            {/* ── Live Analysis Tab ── */}
-            {activeTab === "live" && (
+          <div className="p-3">
+            {activeTab === "analysis" && (
               <>
-                {loading ? (
-                  <AnalysisSkeleton />
-                ) : analysis ? (
-                  <>
-                    <PriceTicker
-                      symbol={analysis.symbol}
-                      initialPrice={analysis.price}
-                      initialChangePct={analysis.change_pct}
-                    />
-
-                    <SignalExplainer data={analysis} />
-                    <SignalPanel data={analysis} />
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <IndicatorsPanel indicators={analysis.indicators} />
-
-                      <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-4">
-                        <div className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
-                          Quant Rationale
+                {loading ? <AnalysisSkeleton /> : analysis ? (
+                  <div className="space-y-3">
+                    <PriceTicker symbol={analysis.symbol} initialPrice={analysis.price} initialChangePct={analysis.change_pct} />
+                    {/* Data source badge */}
+                    {dataSourceBadge && <DataSourceBadge source={dataSourceBadge} />}
+                    {/* Trading Cockpit — synthesized action plan for this stock */}
+                    <TradingCockpit data={analysis} accountSize={portfolioCapital} />
+                    {/* Price chart — TwelveData shows immediately from cache, candlestick follows */}
+                    {(candles.length > 0 || tdCandles !== null) && (
+                      <div className="panel p-3">
+                        <div className="panel-header" style={{ margin: "-12px -12px 8px" }}>
+                          <span>{analysis.symbol} — {activePeriod.toUpperCase()}</span>
+                          <span style={{ fontSize: "9px", color: "var(--text-muted)" }}>
+                            {candles.length > 0 ? "▲ buy signal · ▼ sell signal" : "price chart · TwelveData"}
+                          </span>
                         </div>
-                        <ul className="space-y-2 text-xs text-zinc-400">
-                          <li className="flex items-start gap-2">
-                            <span className="text-indigo-400 mt-0.5">▸</span>
-                            <span>
-                              <strong className="text-zinc-200">Regime: </strong>
-                              {analysis.regime === "trending_up"    && "Hurst > 0.6 + positive EMA spread → persistent uptrend. Trend-follow weight ×2."}
-                              {analysis.regime === "trending_down"  && "Hurst > 0.6 + negative EMA spread → persistent downtrend. Trend-follow weight ×2."}
-                              {analysis.regime === "mean_reverting" && "Hurst < 0.4 → prices revert to mean. Mean-reversion weight ×2.5."}
-                              {analysis.regime === "volatile"       && "ATR 85th+ percentile → elevated volatility. All signal weights halved; ML ensemble primary."}
-                              {analysis.regime === "quiet"          && "Moderate Hurst, normal volatility. Balanced signal weighting."}
+                        {candles.length > 0
+                          ? <PriceChart data={candles} symbol={analysis.symbol} />
+                          : tdCandles && <TdSparkFull candles={tdCandles} />
+                        }
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+                      <div className="xl:col-span-2 space-y-3">
+                        <SignalPanel data={analysis} onCompare={() => handleTabChange("compare")} />
+                        <SignalExplainer data={analysis} />
+                        {/* Options horizon selector + panel */}
+                        <div>
+                          <div style={{ display: "flex", gap: "4px", marginBottom: "6px", flexWrap: "wrap" }}>
+                            {(["day", "swing", "month", "quarter", "year"] as const).map(h => (
+                              <button
+                                key={h}
+                                onClick={() => setOptionsHorizon(h)}
+                                style={{
+                                  fontFamily: "'Palatino Linotype', Palatino, serif",
+                                  fontSize: "9px", fontWeight: 600,
+                                  letterSpacing: "0.1em", textTransform: "uppercase",
+                                  padding: "3px 10px", cursor: "pointer",
+                                  background: optionsHorizon === h ? "var(--blue)" : "var(--bg-raised)",
+                                  color: optionsHorizon === h ? "#FFFFFF" : "var(--text-muted)",
+                                  border: `1px solid ${optionsHorizon === h ? "var(--blue)" : "var(--border)"}`,
+                                  transition: "all 0.15s",
+                                }}
+                              >
+                                {h}
+                              </button>
+                            ))}
+                            <span style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "9px", color: "var(--text-muted)", alignSelf: "center", marginLeft: "4px" }}>
+                              options horizon
                             </span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="text-indigo-400 mt-0.5">▸</span>
-                            <span>
-                              <strong className="text-zinc-200">Sizing: </strong>
-                              Half-Kelly criterion on empirical returns ({analysis.position_size_pct}% of portfolio).
-                              {analysis.monte_carlo.cvar_5pct < -8 && " CVaR gate triggered — size halved due to tail risk."}
-                            </span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="text-indigo-400 mt-0.5">▸</span>
-                            <span>
-                              <strong className="text-zinc-200">ML: </strong>
-                              GBM ensemble trained on walk-forward windows with 14 ADV-normalised features. Signals fire at &gt;62% probability.
-                            </span>
-                          </li>
-                          <li className="flex items-start gap-2">
-                            <span className="text-indigo-400 mt-0.5">▸</span>
-                            <span>
-                              <strong className="text-zinc-200">Risk: </strong>
-                              {analysis.monte_carlo.prob_positive}% of 500 Monte Carlo paths (21-day) are profitable.
-                              Worst-case DD: {analysis.monte_carlo.worst_dd}%.
-                            </span>
-                          </li>
-                        </ul>
-                        <div className="mt-4 pt-3 border-t border-zinc-800/40 flex items-center justify-between">
-                          <span className="text-[10px] text-zinc-600">Share this analysis</span>
-                          <a
-                            href={`/analysis/${analysis.symbol}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[11px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2"
-                          >
-                            /analysis/{analysis.symbol} ↗
-                          </a>
+                          </div>
+                          <OptionsPanel symbol={analysis.symbol} horizon={optionsHorizon} />
                         </div>
+                        <SignalHistoryPanel symbol={analysis.symbol} period={activePeriod} />
+                      </div>
+                      <div>
+                        <IndicatorsPanel indicators={analysis.indicators} />
                       </div>
                     </div>
-
-                    <p className="text-[10px] text-zinc-700 text-right">
-                      Tip: press <kbd className="bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5">S</kbd> for Simulator ·{" "}
-                      <kbd className="bg-zinc-800 border border-zinc-700 rounded px-1 py-0.5">P</kbd> for Portfolio
-                    </p>
-                  </>
-                ) : !error ? (
-                  <div className="flex flex-col items-center justify-center py-32 gap-3 text-center">
-                    <BarChart2 className="h-10 w-10 text-zinc-700" />
-                    <div className="text-zinc-400 font-semibold">No data yet</div>
-                    <div className="text-zinc-600 text-sm max-w-xs">
-                      Enter a stock ticker above (e.g. AAPL, TSLA, NVDA) to run a full AI analysis.
-                    </div>
                   </div>
+                ) : !error ? (
+                  <EmptyState onSymbol={handleSymbol} />
                 ) : null}
               </>
             )}
-
-            {/* ── Simulator Tab ── */}
             {activeTab === "simulator" && (
-              <SimulatorPanel
-                result={backtest}
-                loading={backtestLoading}
-                onRun={runBacktest}
-                symbol={activeSymbol}
+              <SimulatorPanel result={backtest} loading={backtestLoading} onRun={runBacktest} symbol={activeSymbol} />
+            )}
+            {activeTab === "portfolio" && <PortfolioPanel />}
+            {activeTab === "market" && (
+              <MarketOverviewPanel
+                onSelectSymbol={handleSymbol}
+                onGoToAnalysis={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
               />
             )}
-
-            {/* ── Portfolio Tab ── */}
-            {activeTab === "portfolio" && <PortfolioPanel />}
+            {activeTab === "trading" && (
+              <TradingPanel defaultSymbol={activeSymbol} onSelectSymbol={handleSymbol} />
+            )}
+            {activeTab === "scanner" && (
+              <SP500Scanner onSelectSymbol={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }} />
+            )}
+            {activeTab === "compare" && (
+              <ComparisonPanel
+                initialSymbols={activeSymbol ? [activeSymbol] : []}
+                period={activePeriod}
+              />
+            )}
+            {activeTab === "agent" && <AgentPanel />}
+            {activeTab === "picks" && (
+              <DayTradePicksPanel
+                onSelectSymbol={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
+              />
+            )}
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
+
+      {/* Status bar */}
+      <StatusBar symbol={activeSymbol} analysis={analysis} />
 
       <KeyboardShortcuts
-        onL={() => setActiveTab("live")}
-        onS={() => setActiveTab("simulator")}
-        onP={() => setActiveTab("portfolio" as any)}
+        handlers={{
+          a: () => handleTabChange("analysis"),
+          s: () => handleTabChange("simulator"),
+          p: () => handleTabChange("portfolio"),
+          m: () => handleTabChange("market"),
+          t: () => handleTabChange("trading"),
+          n: () => handleTabChange("scanner"),
+          c: () => handleTabChange("compare"),
+          g: () => handleTabChange("agent"),
+          k: () => handleTabChange("picks"),
+        }}
       />
     </div>
   );
 }
 
-function KeyboardShortcuts({ onL, onS, onP }: { onL: () => void; onS: () => void; onP: () => void }) {
+function EmptyState({ onSymbol }: { onSymbol: (s: string) => void }) {
+  const suggestions = ["AAPL", "NVDA", "MSFT", "TSLA", "META", "AMZN"];
+  return (
+    <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
+      <div className="text-3xl font-bold" style={{ color: "var(--text-secondary)" }}>QuantTrader Pro</div>
+      <div className="text-sm" style={{ color: "var(--text-muted)" }}>Enter a ticker or pick a popular stock</div>
+      <div className="flex gap-2 flex-wrap justify-center mt-2">
+        {suggestions.map(s => (
+          <button key={s} onClick={() => onSymbol(s)} className="et-btn et-btn-ghost px-4 py-2">
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function KeyboardShortcuts({ handlers }: { handlers: Record<string, () => void> }) {
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
+    const h = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === "l" || e.key === "L") onL();
-      if (e.key === "s" || e.key === "S") onS();
-      if (e.key === "p" || e.key === "P") onP();
+      const fn = handlers[e.key.toLowerCase()];
+      if (fn) fn();
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onL, onS, onP]);
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [handlers]);
   return null;
 }
 
 export default function Home() {
-  return (
-    <Suspense fallback={null}>
-      <AppInner />
-    </Suspense>
-  );
+  return <Suspense fallback={null}><AppInner /></Suspense>;
 }

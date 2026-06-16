@@ -1,60 +1,52 @@
 "use client";
 
-import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
-import { signalLabel, signalColor, signalBg, fmtPct, fmt, cn } from "@/lib/utils";
+import { signalLabel, fmtPct, fmt } from "@/lib/utils";
 import type { WatchlistItem } from "@/types/quant";
 import { useTrader } from "@/store/trader";
 
-interface Props {
-  items: WatchlistItem[];
-  onSelect: (sym: string) => void;
-}
-
-export function WatchlistPanel({ items, onSelect }: Props) {
+export function WatchlistPanel({ items, onSelect }: { items: WatchlistItem[]; onSelect: (s: string) => void }) {
   const activeSymbol = useTrader((s) => s.activeSymbol);
 
   return (
-    <Card className="h-full">
-      <CardHeader>
-        <CardTitle>Watchlist</CardTitle>
-        <span className="text-[10px] text-zinc-500">↓ by conviction</span>
-      </CardHeader>
-      <div className="overflow-auto max-h-[500px] space-y-1 pr-1">
-        {items.map((item) => (
-          <button
-            key={item.symbol}
-            onClick={() => onSelect(item.symbol)}
-            className={cn(
-              "w-full flex items-center justify-between p-2.5 rounded-lg text-left transition-all",
-              "hover:bg-zinc-800/60",
-              activeSymbol === item.symbol ? "bg-zinc-800/80 ring-1 ring-indigo-500/40" : "bg-zinc-900/30"
-            )}
-          >
-            <div className="flex flex-col gap-0.5">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-sm text-zinc-100">{item.symbol}</span>
-                <span className={cn("text-[10px] font-bold", signalColor(item.signal))}>
-                  {signalLabel(item.signal)}
-                </span>
+    <div className="panel h-full overflow-hidden flex flex-col">
+      <div className="panel-header">
+        <span>Watchlist</span>
+        <span style={{ color: "var(--text-disabled)", fontSize: "9px" }}>↓ conviction</span>
+      </div>
+      <div className="overflow-y-auto flex-1">
+        {items.map((item) => {
+          const sigColor = item.signal === 1 ? "var(--green)" : item.signal === -1 ? "var(--red)" : "var(--yellow)";
+          const active = activeSymbol === item.symbol;
+          return (
+            <button
+              key={item.symbol}
+              onClick={() => onSelect(item.symbol)}
+              className="w-full flex items-center justify-between px-3 py-2 text-left transition-colors"
+              style={{
+                background: active ? "var(--bg-active)" : "transparent",
+                borderLeft: active ? `2px solid var(--blue)` : "2px solid transparent",
+              }}
+            >
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold font-mono" style={{ color: "var(--text-primary)" }}>{item.symbol}</span>
+                  <span className="text-[9px] font-bold" style={{ color: sigColor }}>{signalLabel(item.signal)}</span>
+                </div>
+                <span className="text-[9px]" style={{ color: "var(--text-muted)" }}>{item.regime.replace("_", " ")}</span>
               </div>
-              <span className="text-[10px] text-zinc-500">{item.regime.replace("_", " ")}</span>
-            </div>
-            <div className="flex flex-col items-end gap-0.5">
-              <span className="text-xs font-semibold text-zinc-200">${fmt(item.price)}</span>
-              <span className={cn("text-[10px]", item.change_pct >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                {fmtPct(item.change_pct)}
-              </span>
-              <span className="text-[10px] text-zinc-500">
-                K {item.kelly_pct.toFixed(1)}%
-              </span>
-            </div>
-          </button>
-        ))}
+              <div className="text-right">
+                <div className="text-xs num font-semibold" style={{ color: "var(--text-primary)" }}>${fmt(item.price)}</div>
+                <div className="text-[9px] num" style={{ color: item.change_pct >= 0 ? "var(--green)" : "var(--red)" }}>
+                  {fmtPct(item.change_pct)}
+                </div>
+              </div>
+            </button>
+          );
+        })}
         {items.length === 0 && (
-          <div className="text-zinc-600 text-sm text-center py-8">Loading watchlist…</div>
+          <div className="text-center py-8 text-xs" style={{ color: "var(--text-disabled)" }}>Loading…</div>
         )}
       </div>
-    </Card>
+    </div>
   );
 }

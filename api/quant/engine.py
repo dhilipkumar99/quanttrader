@@ -2,6 +2,13 @@
 Quant Trading Engine
 Implements strategies from QuantBasics: ADV normalization, multi-factor signals,
 volume curve prediction, Kelly criterion sizing, Monte Carlo risk, ensemble models.
+
+Horizon support:
+  day    — intraday/overnight, 1-2 day hold. ATR%, volume surge, 6mo lookback.
+  swing  — 1–4 week hold. EMA crossovers, RSI reversion, earnings proximity.
+  month  — 1–3 month. Medium-term trend + sector relative strength.
+  quarter— 3–6 month. Price momentum + macro regime.
+  year   — 6–12 month. Jegadeesh-Titman 12-1mo momentum, Hurst mean-reversion.
 """
 
 import numpy as np
@@ -14,6 +21,16 @@ from dataclasses import dataclass, field
 from typing import Optional
 import warnings
 warnings.filterwarnings('ignore')
+
+# Valid horizon keys and their metadata
+HORIZONS = {
+    "day":     {"label": "Day Trade",    "period": "6mo",  "hold_days": 1,   "mc_horizon": 5},
+    "swing":   {"label": "Swing (1-4w)", "period": "6mo",  "hold_days": 10,  "mc_horizon": 14},
+    "month":   {"label": "1 Month",      "period": "6mo",  "hold_days": 21,  "mc_horizon": 21},
+    "quarter": {"label": "3 Months",     "period": "1y",   "hold_days": 63,  "mc_horizon": 63},
+    "year":    {"label": "6-12 Months",  "period": "1y",   "hold_days": 252, "mc_horizon": 126},
+}
+DEFAULT_HORIZON = "day"
 
 
 # ─── Data Structures ─────────────────────────────────────────────────────────
@@ -43,6 +60,8 @@ class QuantResult:
     sharpe_estimate: float
     max_drawdown_estimate: float
     monte_carlo: dict
+    horizon: str = "day"    # which horizon this result is scored for
+    horizon_score: float = 0.0  # horizon-specific composite score (for ranking)
 
 
 # ─── Feature Engineering (QuantBasics §5: normalisation, §10: feature selection)
@@ -261,6 +280,63 @@ class MomentumSignal:
         return None
 
 
+class IntradayMomentumSignal:
+    """
+    Day-trade focused: volume surge + short-term price spike + ATR expansion.
+    Uses last 5 bars to detect today's breakout/breakdown vs prior range.
+    """
+
+    def generate(self, features: pd.DataFrame, price: float) -> Optional[Signal]:
+        if len(features) < 6:
+            return None
+        row  = features.iloc[-1]
+        vol_adv   = float(row.get("vol_adv_ratio", 1))
+        ret_1d    = float(row.get("ret_1d", 0))
+        atr_pct   = float(row.get("atr_pct", 0.01))
+        rsi       = float(row.get("rsi_14", 50))
+        ema_sp    = float(row.get("ema_8_21_spread", 0))
+
+        # Volume surge + gap-up momentum (breakout)
+        if vol_adv > 1.8 and ret_1d > atr_pct * 0.6 and ema_sp > 0 and rsi < 75:
+            conf = min(0.88, (vol_adv - 1) * 0.15 + ret_1d / (atr_pct + 1e-8) * 0.08)
+            return Signal(1, conf, "intraday_momentum",
+                          price, price * (1 - atr_pct * 1.2), price * (1 + atr_pct * 2), 0.0)
+        # Volume surge + gap-down oversold bounce
+        if vol_adv > 2.0 and ret_1d < -atr_pct * 0.8 and rsi < 32:
+            conf = min(0.82, (vol_adv - 1.5) * 0.12 + abs(ret_1d) / (atr_pct + 1e-8) * 0.06)
+            return Signal(1, conf, "intraday_momentum",
+                          price, price * (1 - atr_pct * 0.8), price * (1 + atr_pct * 1.5), 0.0)
+        return None
+
+
+class LongTermMomentumSignal:
+    """
+    6-12 month horizon: cross-sectional Jegadeesh-Titman 12-1 momentum + Hurst.
+    Only fires when trend persistence (Hurst>0.55) supports multi-month continuation.
+    """
+
+    def generate(self, features: pd.DataFrame, price: float) -> Optional[Signal]:
+        if len(features) < 30:
+            return None
+        row = features.iloc[-1]
+        mom_12_1  = float(row.get("mom_12_1", 0))
+        hurst     = float(row.get("hurst", 0.5))
+        ema_sp    = float(row.get("ema_21_55_spread", 0))
+        rsi       = float(row.get("rsi_14", 50))
+
+        # Strong 12-1mo momentum with trend persistence — continuation play
+        if mom_12_1 > 0.15 and hurst > 0.55 and ema_sp > 0 and rsi < 78:
+            conf = min(0.88, mom_12_1 * 1.8 + (hurst - 0.5) * 0.8)
+            return Signal(1, conf, "longterm_momentum",
+                          price, price * 0.92, price * 1.18, 0.0)
+        # Crashed hard, now mean-reverting — contrarian long
+        if mom_12_1 < -0.20 and hurst < 0.42 and rsi < 35:
+            conf = min(0.75, abs(mom_12_1) * 1.2 + (0.5 - hurst) * 0.6)
+            return Signal(1, conf, "longterm_momentum",
+                          price, price * 0.88, price * 1.22, 0.0)
+        return None
+
+
 class MLSignal:
     """
     Gradient Boosted Trees (QuantBasics §10.5 decision trees, §10.6).
@@ -269,8 +345,8 @@ class MLSignal:
 
     def __init__(self):
         self.model = GradientBoostingClassifier(
-            n_estimators=150, max_depth=4, learning_rate=0.05,
-            subsample=0.8, random_state=42
+            n_estimators=80, max_depth=3, learning_rate=0.08,
+            subsample=1.0, random_state=42
         )
         self.scaler = StandardScaler()
         self.trained = False
@@ -465,58 +541,92 @@ class QuantEngine:
     """
     Orchestrates all sub-models into a single composite signal with:
     - Regime-aware weighting (trending → trend signals; mean-reverting → MR signals)
-    - ML ensemble overlay
+    - Per-symbol ML model cache — correct isolation + 10x speedup on repeat calls
     - Kelly sizing
     - Monte Carlo risk gate
     """
 
-    def __init__(self):
-        self.feature_eng   = FeatureEngineer()
-        self.regime_det    = RegimeDetector()
-        self.mr_signal     = MeanReversionSignal()
-        self.trend_signal  = TrendFollowSignal()
-        self.mom_signal    = MomentumSignal()
-        self.ml_signal     = MLSignal()
-        self.kelly         = KellySizer()
-        self.mc_risk       = MonteCarloRisk(n_simulations=500, horizon=21)
-        self.metrics       = PerformanceMetrics()
+    # Class-level ML cache: symbol → {"model": MLSignal, "ts": float, "n_rows": int}
+    # 4-hour TTL; also retrain if dataset grew by >5 rows since last fit.
+    _ML_CACHE:     dict = {}
+    _ML_CACHE_TTL: float = 4 * 3600  # seconds
+    _ML_LOCK = __import__("threading").Lock()
 
-    def analyze(self, df: pd.DataFrame, symbol: str = "UNKNOWN") -> QuantResult:
+    def __init__(self):
+        self.feature_eng     = FeatureEngineer()
+        self.regime_det      = RegimeDetector()
+        self.mr_signal       = MeanReversionSignal()
+        self.trend_signal    = TrendFollowSignal()
+        self.mom_signal      = MomentumSignal()
+        self.intraday_signal = IntradayMomentumSignal()
+        self.lt_mom_signal   = LongTermMomentumSignal()
+        self.kelly           = KellySizer()
+        self.mc_risk         = MonteCarloRisk(n_simulations=500, horizon=21)
+        self.metrics         = PerformanceMetrics()
+
+    def _get_ml_signal(self, features: pd.DataFrame, symbol: str) -> MLSignal:
+        """Return a trained MLSignal for this symbol, reusing cache when fresh."""
+        import time as _t
+        now     = _t.time()
+        n_rows  = len(features)
+        with self._ML_LOCK:
+            entry = self._ML_CACHE.get(symbol)
+            if (entry is not None
+                    and (now - entry["ts"]) < self._ML_CACHE_TTL
+                    and abs(n_rows - entry["n_rows"]) < 6):
+                return entry["model"]
+        # Train fresh model
+        ml = MLSignal()
+        ml.fit(features.iloc[:-1])
+        with self._ML_LOCK:
+            self._ML_CACHE[symbol] = {"model": ml, "ts": now, "n_rows": n_rows}
+        return ml
+
+    def analyze(self, df: pd.DataFrame, symbol: str = "UNKNOWN",
+                horizon: str = DEFAULT_HORIZON) -> QuantResult:
         if df.empty or len(df) < 30:
-            return self._empty_result(symbol)
+            return self._empty_result(symbol, horizon)
 
         # 1. Feature engineering
         features = self.feature_eng.compute(df)
         if features.empty:
-            return self._empty_result(symbol)
-
-        # 2. Fit ML model (walk-forward, no look-ahead)
-        self.ml_signal.fit(features.iloc[:-1])  # never use last row for training
+            return self._empty_result(symbol, horizon)
 
         price = float(df["Close"].iloc[-1])
         returns = df["Close"].pct_change().dropna().values
 
+        # 2. Get per-symbol ML model (cached; trains on first call, reuses thereafter)
+        ml_signal = self._get_ml_signal(features, symbol)
+
         # 3. Regime detection
         regime = self.regime_det.detect(features)
 
-        # 4. Signal generation
+        # 4. Signal generation — horizon-specific signal set
         signals: list[Signal] = []
-        for gen in [self.mr_signal, self.trend_signal, self.mom_signal, self.ml_signal]:
+        generators = self._signal_generators_for_horizon(horizon, ml_signal)
+        for gen in generators:
             sig = gen.generate(features, price)
             if sig:
                 signals.append(sig)
 
-        # 5. Regime-aware ensemble weighting
-        weights = self._regime_weights(regime)
+        # 5. Regime-aware + horizon-aware ensemble weighting
+        weights = self._regime_weights(regime, horizon)
         composite, confidence = self._ensemble(signals, weights)
 
-        # 6. Kelly sizing
+        # 6. Kelly sizing — tighter for short horizons, standard for longer
         kelly_f = self.kelly.estimate_from_history(returns)
+        if horizon == "day":
+            kelly_f = min(kelly_f, 0.15)   # cap day-trade at 15%
+        elif horizon == "swing":
+            kelly_f = min(kelly_f, 0.20)
 
-        # 7. Monte Carlo risk gate — only allocate if MC looks acceptable
-        mc = self.mc_risk.run(returns, position_fraction=kelly_f)
-        if mc["cvar_5pct"] < -8.0:
-            kelly_f *= 0.5   # halve sizing in dangerous regimes
+        # 7. Monte Carlo risk gate — horizon-tuned simulation window
+        mc_horizon = HORIZONS.get(horizon, HORIZONS[DEFAULT_HORIZON])["mc_horizon"]
+        mc_runner = MonteCarloRisk(n_simulations=500, horizon=mc_horizon)
+        mc = mc_runner.run(returns, position_fraction=kelly_f)
+        cvar_threshold = -5.0 if horizon == "day" else -8.0
+        if mc["cvar_5pct"] < cvar_threshold:
+            kelly_f *= 0.5
 
         # 8. Risk metrics
         risk = {
@@ -531,18 +641,27 @@ class QuantEngine:
         # 9. Indicator snapshot
         last = features.iloc[-1]
         indicators = {
-            "rsi_14":         round(float(last.get("rsi_14", 50)), 2),
-            "macd_hist_norm": round(float(last.get("macd_hist_norm", 0)), 6),
-            "bb_pct":         round(float(last.get("bb_pct", 0)), 4),
-            "ema_8_21_spread": round(float(last.get("ema_8_21_spread", 0)), 6),
-            "atr_pct":        round(float(last.get("atr_pct", 0.01)) * 100, 3),
-            "vol_adv_ratio":  round(float(last.get("vol_adv_ratio", 1)), 3),
-            "hurst":          round(float(last.get("hurst", 0.5)), 3),
-            "mom_12_1":       round(float(last.get("mom_12_1", 0)) * 100, 2),
+            "rsi_14":           round(float(last.get("rsi_14", 50)), 2),
+            "macd_hist_norm":   round(float(last.get("macd_hist_norm", 0)), 6),
+            "bb_pct":           round(float(last.get("bb_pct", 0)), 4),
+            "ema_8_21_spread":  round(float(last.get("ema_8_21_spread", 0)), 6),
+            "ema_21_55_spread": round(float(last.get("ema_21_55_spread", 0)), 6),
+            "atr_pct":          round(float(last.get("atr_pct", 0.01)) * 100, 3),
+            "vol_adv_ratio":    round(float(last.get("vol_adv_ratio", 1)), 3),
+            "hurst":            round(float(last.get("hurst", 0.5)), 3),
+            "mom_12_1":         round(float(last.get("mom_12_1", 0)) * 100, 2),
+            "mom_3":            round(float(last.get("mom_3", 0)) * 100, 2),
+            "ret_5d":           round(float(last.get("ret_5d", 0)) * 100, 2),
         }
 
-        # Expected return estimate (arithmetic mean × confidence scaling)
-        exp_ret = float(np.mean(returns)) * 252 * confidence * composite
+        # Expected return — scaled to horizon hold period, not annualised
+        hold_days = HORIZONS.get(horizon, HORIZONS[DEFAULT_HORIZON])["hold_days"]
+        daily_mean = float(np.mean(returns))
+        exp_ret = daily_mean * hold_days * confidence * max(composite, 0)
+
+        # Horizon score for ranking — emphasises different factors per horizon
+        horizon_score = self._horizon_score(features, indicators, risk, confidence,
+                                            exp_ret, mc, horizon)
 
         return QuantResult(
             symbol=symbol,
@@ -553,28 +672,108 @@ class QuantEngine:
             risk_metrics=risk,
             indicators=indicators,
             position_size_pct=round(kelly_f * 100, 2),
-            expected_return=round(exp_ret * 100, 2),
+            expected_return=round(exp_ret * 100, 4),
             sharpe_estimate=risk["sharpe"],
             max_drawdown_estimate=risk["max_drawdown"],
             monte_carlo=mc,
+            horizon=horizon,
+            horizon_score=round(horizon_score, 6),
         )
 
-    def _regime_weights(self, regime: str) -> dict:
-        """Regime-conditional signal weights."""
-        base = {"mean_reversion": 1.0, "trend_follow": 1.0,
-                "momentum": 1.0, "ml_gbm": 1.5}
+    def _signal_generators_for_horizon(self, horizon: str, ml_signal: "MLSignal") -> list:
+        """Returns the appropriate signal generator mix for each horizon."""
+        if horizon == "day":
+            return [self.mr_signal, self.intraday_signal, self.trend_signal, ml_signal]
+        elif horizon == "swing":
+            return [self.mr_signal, self.trend_signal, self.mom_signal, ml_signal]
+        elif horizon == "month":
+            return [self.trend_signal, self.mom_signal, self.mr_signal, ml_signal]
+        elif horizon == "quarter":
+            return [self.trend_signal, self.mom_signal, self.lt_mom_signal, ml_signal]
+        else:  # year
+            return [self.lt_mom_signal, self.trend_signal, self.mom_signal, ml_signal]
+
+    def _horizon_score(self, features: pd.DataFrame, indicators: dict,
+                       risk: dict, confidence: float, exp_ret: float,
+                       mc: dict, horizon: str) -> float:
+        """
+        Composite ranking score tailored to each horizon.
+        Higher = better candidate for that time frame.
+        """
+        sharpe    = risk.get("sharpe", 0)
+        mc_prob   = mc.get("prob_positive", 50) / 100
+        vol_adv   = indicators.get("vol_adv_ratio", 1)
+        atr_pct   = indicators.get("atr_pct", 1) / 100  # convert back to fraction
+        hurst     = indicators.get("hurst", 0.5)
+        mom_12_1  = indicators.get("mom_12_1", 0) / 100
+        rsi       = indicators.get("rsi_14", 50)
+        ret_5d    = indicators.get("ret_5d", 0) / 100
+
+        if horizon == "day":
+            # Reward: volume surge, ATR (range = opportunity), tight conf × exp_ret
+            vol_bonus = max(0, vol_adv - 1) * 0.15
+            atr_bonus = min(atr_pct * 4, 0.20)   # more ATR = more intraday range
+            return confidence * max(exp_ret, 0) + vol_bonus + atr_bonus
+
+        elif horizon == "swing":
+            # RSI reversal from oversold + MACD crossover + short momentum
+            rsi_bonus  = max(0, (40 - rsi) / 40) * 0.12 if rsi < 40 else 0
+            ret5_bonus = max(0, ret_5d) * 0.5
+            return confidence * max(exp_ret, 0) + rsi_bonus + ret5_bonus + max(sharpe, 0) * 0.05
+
+        elif horizon == "month":
+            # Trend quality: sharpe + momentum + MC prob
+            return confidence * max(exp_ret, 0) + max(sharpe, 0) * 0.08 + mc_prob * 0.06
+
+        elif horizon == "quarter":
+            # Momentum strength dominates
+            mom_bonus = max(0, mom_12_1) * 0.4
+            return confidence * max(exp_ret, 0) + mom_bonus + max(sharpe, 0) * 0.06
+
+        else:  # year
+            # Hurst persistence + 12-1mo momentum is the primary edge
+            hurst_bonus = max(0, hurst - 0.5) * 0.5
+            mom_bonus   = max(0, mom_12_1) * 0.6
+            return confidence * max(exp_ret, 0) + hurst_bonus + mom_bonus
+
+    def _regime_weights(self, regime: str, horizon: str = DEFAULT_HORIZON) -> dict:
+        """Regime-conditional + horizon-conditional signal weights."""
+        base = {
+            "mean_reversion":    1.0,
+            "trend_follow":      1.0,
+            "momentum":          1.0,
+            "ml_gbm":            1.5,
+            "intraday_momentum": 1.0,
+            "longterm_momentum": 1.0,
+        }
+        # Regime adjustments
         if regime in (RegimeDetector.TRENDING_UP, RegimeDetector.TRENDING_DOWN):
-            base["trend_follow"] = 2.0
-            base["momentum"]     = 1.5
-            base["mean_reversion"] = 0.4
+            base["trend_follow"]      = 2.0
+            base["momentum"]          = 1.5
+            base["mean_reversion"]    = 0.4
+            base["intraday_momentum"] = 1.2
         elif regime == RegimeDetector.MEAN_REVERTING:
-            base["mean_reversion"] = 2.5
-            base["trend_follow"]   = 0.3
-            base["momentum"]       = 0.5
+            base["mean_reversion"]    = 2.5
+            base["trend_follow"]      = 0.3
+            base["momentum"]          = 0.5
+            base["intraday_momentum"] = 0.6
         elif regime == RegimeDetector.VOLATILE:
-            # Scale everything down; let ML decide
             base = {k: 0.3 for k in base}
             base["ml_gbm"] = 1.0
+            base["intraday_momentum"] = 0.8  # volatile = intraday opportunity
+
+        # Horizon overrides — boost the signals most predictive for this hold period
+        if horizon == "day":
+            base["intraday_momentum"] = max(base["intraday_momentum"], 2.0)
+            base["longterm_momentum"] = 0.0  # irrelevant for day trades
+        elif horizon == "swing":
+            base["mean_reversion"]    = max(base["mean_reversion"], 1.8)
+            base["longterm_momentum"] = 0.2
+        elif horizon in ("quarter", "year"):
+            base["longterm_momentum"] = max(base["longterm_momentum"], 2.0)
+            base["intraday_momentum"] = 0.0  # irrelevant for multi-month holds
+            base["momentum"]          = max(base["momentum"], 1.6)
+
         return base
 
     @staticmethod
@@ -595,12 +794,12 @@ class QuantEngine:
         return 0, max(vote_long, vote_short) / total
 
     @staticmethod
-    def _empty_result(symbol: str) -> QuantResult:
+    def _empty_result(symbol: str, horizon: str = DEFAULT_HORIZON) -> QuantResult:
         return QuantResult(
             symbol=symbol, signals=[], composite_signal=0,
             composite_confidence=0.0, regime="quiet",
             risk_metrics={}, indicators={},
             position_size_pct=0.0, expected_return=0.0,
             sharpe_estimate=0.0, max_drawdown_estimate=0.0,
-            monte_carlo={}
+            monte_carlo={}, horizon=horizon, horizon_score=0.0,
         )

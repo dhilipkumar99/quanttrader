@@ -2,7 +2,6 @@
 
 import { useState, useRef } from "react";
 import { Search, X } from "lucide-react";
-import { cn } from "@/lib/utils";
 
 const POPULAR = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
                  "JPM", "SPY", "QQQ", "NFLX", "AMD", "UBER", "COIN"];
@@ -34,8 +33,9 @@ export function SearchBar({ value, onChange, period, onPeriodChange }: Props) {
     <div className="flex flex-wrap items-center gap-3">
       {/* Symbol search */}
       <div className="relative">
-        <div className="flex items-center gap-2 bg-zinc-800/60 border border-zinc-700/40 rounded-xl px-3 py-2 focus-within:ring-1 focus-within:ring-indigo-500/40">
-          <Search className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+        <div className="flex items-center gap-2 px-3 py-2"
+          style={{ background: "var(--bg-raised)", border: "1px solid var(--border-strong)", borderRadius: 2 }}>
+          <Search className="h-3.5 w-3.5 flex-shrink-0" style={{ color: "var(--text-muted)" }} />
           <input
             ref={ref}
             value={input}
@@ -44,24 +44,29 @@ export function SearchBar({ value, onChange, period, onPeriodChange }: Props) {
             onBlur={() => setTimeout(() => setFocused(false), 150)}
             onKeyDown={(e) => e.key === "Enter" && submit(input)}
             placeholder="Symbol (e.g. AAPL)"
-            className="bg-transparent text-sm text-zinc-100 placeholder-zinc-600 outline-none w-36"
+            className="bg-transparent outline-none text-sm font-mono uppercase w-32"
+            style={{ color: "var(--text-primary)" }}
           />
           {input && (
-            <button onClick={() => { setInput(""); ref.current?.focus(); }}>
-              <X className="h-3 w-3 text-zinc-600 hover:text-zinc-400" />
+            <button onClick={() => { setInput(""); ref.current?.focus(); }} style={{ color: "var(--text-muted)" }}>
+              <X className="h-3 w-3" />
             </button>
           )}
         </div>
 
         {focused && (
-          <div className="absolute top-full mt-1 left-0 z-50 bg-zinc-900 border border-zinc-700/60 rounded-xl p-2 shadow-2xl w-64">
-            <div className="text-[10px] text-zinc-500 uppercase tracking-wide px-2 mb-2">Popular</div>
+          <div className="absolute top-full mt-1 left-0 z-50 p-2 w-64"
+            style={{ background: "var(--bg-surface)", border: "1px solid var(--border-strong)", borderRadius: 2, boxShadow: "0 8px 32px rgba(0,0,0,0.6)" }}>
+            <div className="text-[9px] uppercase tracking-widest px-2 mb-2" style={{ color: "var(--text-muted)" }}>Popular</div>
             <div className="flex flex-wrap gap-1.5">
               {POPULAR.map((s) => (
                 <button
                   key={s}
                   onMouseDown={() => submit(s)}
-                  className="px-2 py-1 bg-zinc-800 hover:bg-indigo-500/20 hover:text-indigo-300 text-zinc-400 rounded-md text-xs transition-all"
+                  className="px-2 py-1 text-xs transition-all font-mono"
+                  style={{ background: "var(--bg-raised)", color: "var(--text-muted)", borderRadius: 2, border: "1px solid var(--border)" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--blue-dim)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--blue)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--bg-raised)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--text-muted)"; }}
                 >
                   {s}
                 </button>
@@ -72,17 +77,17 @@ export function SearchBar({ value, onChange, period, onPeriodChange }: Props) {
       </div>
 
       {/* Period pills */}
-      <div className="flex gap-1.5">
+      <div className="flex" style={{ border: "1px solid var(--border)", borderRadius: 2, overflow: "hidden" }}>
         {PERIODS.map((p) => (
           <button
             key={p}
             onClick={() => onPeriodChange(p)}
-            className={cn(
-              "px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all",
-              period === p
-                ? "bg-indigo-500/25 text-indigo-300 border border-indigo-500/40"
-                : "bg-zinc-800/40 text-zinc-500 border border-zinc-700/30 hover:text-zinc-300"
-            )}
+            className="px-2.5 py-1.5 text-xs transition-colors"
+            style={{
+              background: period === p ? "var(--blue-dim)" : "transparent",
+              color: period === p ? "var(--blue)" : "var(--text-muted)",
+              borderRight: "1px solid var(--border)",
+            }}
           >
             {p}
           </button>

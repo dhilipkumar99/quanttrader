@@ -51,6 +51,7 @@ export interface AnalysisResult {
   indicators: Indicators;
   monte_carlo: MonteCarlo;
   signals: SubSignal[];
+  data_source?: string;
 }
 
 export interface WatchlistItem {
@@ -100,4 +101,110 @@ export interface BacktestResult {
   equity_curve: number[];
   snapshots: BacktestSnapshot[];
   fills: BacktestFill[];
+}
+
+// ── Market Data ──────────────────────────────────────────────────────────────
+export interface BookLevel {
+  price: number;
+  size: number;
+  side: "buy" | "sell";
+}
+
+export interface OrderBook {
+  symbol: string;
+  bids: BookLevel[];
+  asks: BookLevel[];
+  spread: number;
+  mid_price: number;
+  best_bid: number | null;
+  best_ask: number | null;
+  synthetic: boolean;
+}
+
+export interface MarketMover {
+  symbol: string;
+  price: number;
+  change_pct: number;
+  volume: number;
+}
+
+export interface SectorData {
+  name: string;
+  etf: string;
+  price: number;
+  change_pct: number;
+}
+
+export interface IndexData {
+  name: string;
+  symbol: string;
+  price: number;
+  change_pct: number;
+}
+
+export interface OHLCBar {
+  t: string;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+  vw: number;
+}
+
+// ── Broker ───────────────────────────────────────────────────────────────────
+export interface BrokerAccount {
+  connected: boolean;
+  id?: string;
+  status?: string;
+  cash?: number;
+  portfolio_value?: number;
+  buying_power?: number;
+  equity?: number;
+  last_equity?: number;
+  day_trade_count?: number;
+  paper?: boolean;
+  trading_blocked?: boolean;
+  pattern_day_trader?: boolean;
+  message?: string;
+}
+
+export interface BrokerPosition {
+  symbol: string;
+  qty: number;
+  avg_entry_price: number;
+  current_price: number;
+  market_value: number;
+  unrealized_pl: number;
+  unrealized_plpc: number;
+  side: string;
+}
+
+export interface BrokerOrder {
+  id: string;
+  symbol: string;
+  side: string;
+  qty: number;
+  order_type: string;
+  status: string;
+  filled_qty: number;
+  filled_avg_price: number | null;
+  limit_price: number | null;
+  created_at: string;
+}
+
+// ── S&P 500 ──────────────────────────────────────────────────────────────────
+export interface SP500Quote {
+  symbol: string;
+  price: number;
+  change_pct: number;
+  volume: number;
+  market_cap: number;
+}
+
+export interface HeatTile {
+  symbol: string;
+  change_pct: number;
+  market_cap: number;
+  price: number;
 }
