@@ -1,17 +1,5 @@
 {
   "framework": "nextjs",
-  "functions": {
-    "api/analyze.py":  { "runtime": "python3.12", "maxDuration": 60 },
-    "api/backtest.py": { "runtime": "python3.12", "maxDuration": 60 },
-    "api/watchlist.py":{ "runtime": "python3.12", "maxDuration": 60 },
-    "api/quote.py":    { "runtime": "python3.12", "maxDuration": 10 }
-  },
-  "rewrites": [
-    { "source": "/api/analyze",  "destination": "/api/analyze.py" },
-    { "source": "/api/backtest", "destination": "/api/backtest.py" },
-    { "source": "/api/watchlist","destination": "/api/watchlist.py" },
-    { "source": "/api/quote",    "destination": "/api/quote.py" }
-  ],
   "headers": [
     {
       "source": "/api/(.*)",
