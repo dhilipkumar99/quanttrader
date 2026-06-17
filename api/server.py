@@ -65,30 +65,112 @@ print("✓ AgentLoop ready", flush=True)
 _prewarm_done = False
 
 def _prewarm():
+    """
+    Populate _server_cache with full analyze + candle results for common symbols
+    before /health returns "ok". Guarantees the first real user request is an
+    instant dict lookup, not a blocking yfinance download + ML inference.
+    """
     global _prewarm_done
-    _WARM_SYMBOLS = ["AAPL", "TSLA", "NVDA", "SPY", "QQQ"]
-    for sym in _WARM_SYMBOLS:
+    _WARM = [("AAPL", "1y"), ("TSLA", "1y"), ("NVDA", "1y"), ("SPY", "1y"), ("QQQ", "1y")]
+    for sym, period in _WARM:
         try:
-            df = fetch(sym, period="1y", interval="1d")
-            if not df.empty:
-                _engine.analyze(df, sym)
-                print(f"[prewarm] {sym} ✓", flush=True)
+            df, data_source = fetch_with_source(sym, period=period, interval="1d")
+            if df.empty:
+                print(f"[prewarm] {sym} — empty df", flush=True)
+                continue
+            # Run full analysis
+            result = _engine.analyze(df, sym)
+            quote, quote_source = fetch_quote_with_source(sym)
+            source_label = _build_source_label(data_source, quote_source)
+            analyze_val = {
+                "symbol":               result.symbol,
+                "price":                quote.get("price", 0),
+                "change_pct":           quote.get("change_pct", 0),
+                "composite_signal":     result.composite_signal,
+                "composite_confidence": result.composite_confidence,
+                "regime":               result.regime,
+                "position_size_pct":    result.position_size_pct,
+                "expected_return":      result.expected_return,
+                "risk_metrics":         result.risk_metrics,
+                "indicators":           result.indicators,
+                "monte_carlo":          result.monte_carlo,
+                "data_source":          source_label,
+                "signals": [
+                    {
+                        "source":      s.source,
+                        "direction":   s.direction,
+                        "confidence":  round(s.confidence, 4),
+                        "stop_loss":   round(s.stop_loss, 4),
+                        "take_profit": round(s.take_profit, 4),
+                    }
+                    for s in result.signals
+                ],
+            }
+            with _server_cache_lock:
+                _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": _time.time()}
+
+            # Also build candle cache
+            rows = []
+            for date, row in df.iterrows():
+                date_str = str(date)[:10]
+                rows.append({
+                    "date":   date_str,
+                    "price":  round(float(row["Close"]), 4),
+                    "open":   round(float(row["Open"]), 4),
+                    "high":   round(float(row["High"]), 4),
+                    "low":    round(float(row["Low"]), 4),
+                    "volume": int(row["Volume"]),
+                    "signal": 0,
+                })
+            candle_val = {"symbol": sym, "period": period, "candles": rows}
+            with _server_cache_lock:
+                _server_cache[f"candles:{sym}:{period}"] = {"val": candle_val, "ts": _time.time()}
+
+            print(f"[prewarm] {sym} ✓ ({len(rows)} candles, signal={result.composite_signal:.2f})", flush=True)
         except Exception as e:
             print(f"[prewarm] {sym} failed: {e}", flush=True)
+
     _prewarm_done = True
-    print("[prewarm] complete — /health will now return ready=true", flush=True)
+    print("[prewarm] complete — /health now returns ok", flush=True)
 
 _threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
 
-# ── Simple TTL cache for expensive endpoints ──
+# ── Stale-while-revalidate cache ─────────────────────────────────────────────
+# Rules:
+#   - Fresh (age < ttl): serve immediately, no background work
+#   - Stale (age >= ttl): serve stale immediately, recompute in background
+#   - Missing: compute synchronously (only on very first cold request)
+# This guarantees Render NEVER blocks a Vercel request on a slow computation.
 _server_cache: dict = {}
 _server_cache_lock = _threading.Lock()
+_recomputing: set[str] = set()
 
 def _cached(key: str, ttl: float, fn):
+    now = _time.time()
     with _server_cache_lock:
         entry = _server_cache.get(key)
-        if entry and (_time.time() - entry["ts"]) < ttl:
-            return entry["val"]
+
+    if entry is not None:
+        age = now - entry["ts"]
+        if age < ttl:
+            return entry["val"]          # fresh — serve immediately
+        # Stale — serve stale, kick off background recompute
+        with _server_cache_lock:
+            if key not in _recomputing:
+                _recomputing.add(key)
+                def _bg(k=key, f=fn, t=ttl):
+                    try:
+                        v = f()
+                        if v is not None:
+                            with _server_cache_lock:
+                                _server_cache[k] = {"val": v, "ts": _time.time()}
+                    finally:
+                        with _server_cache_lock:
+                            _recomputing.discard(k)
+                _threading.Thread(target=_bg, daemon=True).start()
+        return entry["val"]              # return stale immediately
+
+    # Cache miss — compute synchronously (only on very first cold hit)
     val = fn()
     if val is not None:
         with _server_cache_lock:

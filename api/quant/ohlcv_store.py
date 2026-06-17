@@ -625,7 +625,7 @@ def _start_background_prefetch(period: str = "1y") -> None:
 # In-memory hot cache on top of SQLite (avoids JSON parse overhead)
 _hot_cache: dict[str, tuple[pd.DataFrame, str, float]] = {}
 _hot_lock = threading.Lock()
-_HOT_TTL = 60  # seconds
+_HOT_TTL = 600  # 10 minutes — must outlive the Render prewarm window
 
 
 def fetch(symbol: str, period: str = "1y", interval: str = "1d") -> tuple[pd.DataFrame, str]:
