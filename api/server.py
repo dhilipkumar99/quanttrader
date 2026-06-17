@@ -195,12 +195,20 @@ def analyze(symbol: str = "AAPL", period: str = "1y"):
 
 @app.get("/api/backtest")
 def backtest(symbol: str = "AAPL", period: str = "1y", cash: float = 100_000):
-    df = fetch(symbol.upper(), period=period, interval="1d")
-    if df.empty:
-        return JSONResponse({"error": "no_data", "symbol": symbol}, status_code=404)
+    sym = symbol.upper()
+    cache_key = f"backtest:{sym}:{period}"
 
-    trader = PaperTrader(initial_cash=cash)
-    return trader.run_backtest(df, symbol.upper())
+    def _compute():
+        df = fetch(sym, period=period, interval="1d")
+        if df.empty:
+            return None
+        trader = PaperTrader(initial_cash=cash)
+        return trader.run_backtest(df, sym)
+
+    val = _cached(cache_key, ttl=600, fn=_compute)
+    if val is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return val
 
 
 @app.get("/api/watchlist")
@@ -960,7 +968,7 @@ def charts_batch(symbols: str = "", period: str = "6mo"):
 
 @app.get("/api/candles")
 def candles(symbol: str = "AAPL", period: str = "1y"):
-    """OHLC price series with backtest signal overlay. Cached 120s."""
+    """OHLC price series. Signals from backtest are reused if already cached; skipped otherwise."""
     sym = symbol.upper()
     cache_key = f"candles:{sym}:{period}"
 
@@ -968,16 +976,16 @@ def candles(symbol: str = "AAPL", period: str = "1y"):
         df = fetch(sym, period=period, interval="1d")
         if df.empty:
             return None
-        # Derive signal overlay from backtest fills — cheap, reuses cached simulator
+
+        # Reuse backtest fills only if a prior backtest result is already in cache
         signal_map: dict[str, int] = {}
-        try:
-            trader = PaperTrader(initial_cash=100_000)
-            bt = trader.run_backtest(df.copy(), sym)
-            for fill in bt.get("fills", []):
+        backtest_cache_key = f"backtest:{sym}:{period}"
+        with _server_cache_lock:
+            bt_entry = _server_cache.get(backtest_cache_key)
+        if bt_entry:
+            for fill in bt_entry["val"].get("fills", []):
                 date_str = str(fill["ts"])[:10]
                 signal_map[date_str] = 1 if fill["side"] == "buy" else -1
-        except Exception:
-            pass
 
         rows = []
         for date, row in df.iterrows():
