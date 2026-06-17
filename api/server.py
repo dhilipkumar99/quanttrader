@@ -60,6 +60,26 @@ print("✓ QuantEngine ready", flush=True)
 _agent = AgentLoop.instance()
 print("✓ AgentLoop ready", flush=True)
 
+# ── Pre-warm OHLCV cache for the most-requested symbols so the first
+#    /api/analyze call hits SQLite, not a live yfinance download ──────────────
+_prewarm_done = False
+
+def _prewarm():
+    global _prewarm_done
+    _WARM_SYMBOLS = ["AAPL", "TSLA", "NVDA", "SPY", "QQQ"]
+    for sym in _WARM_SYMBOLS:
+        try:
+            df = fetch(sym, period="1y", interval="1d")
+            if not df.empty:
+                _engine.analyze(df, sym)
+                print(f"[prewarm] {sym} ✓", flush=True)
+        except Exception as e:
+            print(f"[prewarm] {sym} failed: {e}", flush=True)
+    _prewarm_done = True
+    print("[prewarm] complete — /health will now return ready=true", flush=True)
+
+_threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
+
 # ── Simple TTL cache for expensive endpoints ──
 _server_cache: dict = {}
 _server_cache_lock = _threading.Lock()
@@ -95,7 +115,9 @@ def _build_source_label(data_source: str, quote_source: str) -> str:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # Return "ready" only after pre-warm completes so wakeRender() polling
+    # doesn't fire real API calls before the OHLCV cache is warm.
+    return {"status": "ok" if _prewarm_done else "warming"}
 
 
 @app.get("/api/data-source/status")
