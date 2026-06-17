@@ -140,6 +140,20 @@ async function fetchPost<T>(path: string, body: unknown, timeoutMs = 45_000): Pr
   }
 }
 
+// Wake Render from free-tier sleep. Polls /api/wake until status=ok or timeout.
+export async function wakeRender(timeoutMs = 55_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${BASE}/api/wake`, { signal: AbortSignal.timeout(8_000) });
+      const data = await res.json() as { status?: string };
+      if (data.status === "ok") return true;
+    } catch { /* still waking */ }
+    await new Promise(r => setTimeout(r, 2_000));
+  }
+  return false;
+}
+
 async function get<T>(path: string, timeoutMs = 45_000): Promise<T> {
   const res = await fetchWithRetry(`${BASE}${path}`, timeoutMs);
   if (!res.ok) {

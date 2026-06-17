@@ -3,7 +3,7 @@
 import { useEffect, useCallback, Suspense, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useTrader } from "@/store/trader";
-import { api, type CandlePoint, type ChartCandle, type ScanHorizon } from "@/lib/api";
+import { api, wakeRender, type CandlePoint, type ChartCandle, type ScanHorizon } from "@/lib/api";
 
 // Panels
 import { SignalPanel } from "@/components/panels/SignalPanel";
@@ -133,6 +133,16 @@ function AppInner() {
   const [tdCandles, setTdCandles] = useState<ChartCandle[] | null>(null);
   const [dataSourceBadge, setDataSourceBadge] = useState<string | null>(null);
   const [optionsHorizon, setOptionsHorizon] = useState<ScanHorizon>("day");
+  const [serverReady, setServerReady] = useState(false);
+
+  // Wake Render from free-tier sleep on mount — can take up to 30s cold
+  useEffect(() => {
+    wakeRender().then(ok => {
+      setServerReady(true);
+      if (!ok) toast("Server slow to wake — data may be delayed", "info");
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const sym = searchParams.get("symbol");
@@ -192,6 +202,7 @@ function AppInner() {
   }, [activeSymbol, setBacktestLoading, setError, setBacktest]);
 
   useEffect(() => {
+    if (!serverReady) return; // wait for Render to wake before firing real API calls
     fetchAnalysis(activeSymbol, activePeriod);
     // Fetch candles in parallel — TwelveData cache is instant if swept, yfinance is fallback
     setCandles([]);
@@ -206,7 +217,7 @@ function AppInner() {
       .then(d => setTdCandles(d.candles))
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSymbol, activePeriod]);
+  }, [activeSymbol, activePeriod, serverReady]);
 
   // Refresh quotes only for the user's pinned symbols
   useEffect(() => {
@@ -230,6 +241,19 @@ function AppInner() {
   return (
     <div className="flex flex-col h-screen overflow-hidden" style={{ background: "var(--bg-base)" }}>
       <ToastContainer />
+
+      {/* Server warm-up banner — shown on first load while Render wakes from free-tier sleep */}
+      {!serverReady && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+          padding: "6px 16px", fontSize: "12px", fontWeight: 500,
+          background: "rgba(180,83,9,0.10)", borderBottom: "1px solid rgba(180,83,9,0.25)",
+          color: "#92400E",
+        }}>
+          <RefreshCw size={12} style={{ animation: "spin 1s linear infinite" }} />
+          Warming up server (free tier — first load may take up to 30s)…
+        </div>
+      )}
 
       {/* Top bar */}
       <TopBar

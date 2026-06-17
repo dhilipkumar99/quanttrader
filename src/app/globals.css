@@ -244,6 +244,9 @@ h1, h2, h3, h4, h5, h6 {
   100% { transform: rotate(0);    }
 }
 
+/* Spin (used for server warm-up banner icon) */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
 /* Slide-in toast */
 @keyframes slide-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 .animate-in { animation-fill-mode: both; }
