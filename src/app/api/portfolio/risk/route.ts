@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const dynamic = "force-dynamic";
 const PYTHON_BASE = process.env.PYTHON_API_BASE ?? "http://localhost:8787";
 
 export async function GET(req: NextRequest) {
@@ -9,11 +8,14 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(
       `${PYTHON_BASE}/api/portfolio/risk?symbols=${encodeURIComponent(symbols)}&period=${period}`,
-      { signal: AbortSignal.timeout(30_000) }
+      { signal: AbortSignal.timeout(9_500) }
     );
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    return NextResponse.json(data, {
+      status: res.status,
+      headers: { "Cache-Control": "s-maxage=600, stale-while-revalidate=7200" },
+    });
   } catch (e: unknown) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    return NextResponse.json({ error: String(e) }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }
