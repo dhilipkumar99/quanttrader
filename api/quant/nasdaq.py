@@ -182,7 +182,8 @@ for _s in _RAW_NASDAQ:
 # ── In-memory quote cache ─────────────────────────────────────────────────────
 _quote_cache: dict[str, dict] = {}
 _cache_lock   = threading.Lock()
-_QUOTE_TTL    = 20   # seconds
+_QUOTE_TTL    = 300  # 5 minutes
+_refresh_running = False
 
 
 def _batch_fetch_quotes(symbols: list[str]) -> dict[str, dict]:
@@ -280,29 +281,46 @@ def _batch_fetch_quotes(symbols: list[str]) -> dict[str, dict]:
     return out
 
 
+def _do_refresh() -> None:
+    global _refresh_running
+    _refresh_running = True
+    try:
+        results: dict[str, dict] = {}
+        chunk_size = 80
+        for i in range(0, len(NASDAQ_SYMBOLS), chunk_size):
+            chunk = NASDAQ_SYMBOLS[i: i + chunk_size]
+            results.update(_batch_fetch_quotes(chunk))
+        with _cache_lock:
+            _quote_cache.update(results)
+    except Exception:
+        pass
+    finally:
+        _refresh_running = False
+
+
 def get_nasdaq_quotes(force_refresh: bool = False) -> list[dict]:
     """
     Return quotes for the NASDAQ-exclusive universe.
-    Sorted by volume descending so the most liquid (and most optionable) names
-    are scanned first when scan_limit is applied.
-    Cached 20s.
+    Serves stale data immediately and triggers background refresh when TTL expires.
     """
+    global _refresh_running
     now = time.time()
     with _cache_lock:
         fresh = [v for v in _quote_cache.values() if (now - v.get("ts", 0)) < _QUOTE_TTL]
-        if not force_refresh and len(fresh) >= len(NASDAQ_SYMBOLS) * 0.7:
-            return sorted(fresh, key=lambda x: x.get("volume", 0), reverse=True)
+        stale = list(_quote_cache.values())
 
-    results: dict[str, dict] = {}
-    chunk_size = 80   # smaller chunks for stability with less-liquid names
-    for i in range(0, len(NASDAQ_SYMBOLS), chunk_size):
-        chunk = NASDAQ_SYMBOLS[i: i + chunk_size]
-        results.update(_batch_fetch_quotes(chunk))
+    if not force_refresh and len(fresh) >= len(NASDAQ_SYMBOLS) * 0.7:
+        return sorted(fresh, key=lambda x: x.get("volume", 0), reverse=True)
 
+    if stale and not _refresh_running:
+        threading.Thread(target=_do_refresh, daemon=True).start()
+        return sorted(stale, key=lambda x: x.get("volume", 0), reverse=True)
+
+    if not _refresh_running:
+        _do_refresh()
     with _cache_lock:
-        _quote_cache.update(results)
-
-    return sorted(results.values(), key=lambda x: x.get("volume", 0), reverse=True)
+        all_data = list(_quote_cache.values())
+    return sorted(all_data, key=lambda x: x.get("volume", 0), reverse=True)
 
 
 def get_nasdaq_quote(symbol: str) -> Optional[dict]:
@@ -324,13 +342,14 @@ def get_nasdaq_symbols() -> list[str]:
     return list(NASDAQ_SYMBOLS)
 
 
-# ── Background warm-up ─────────────────────────────────────────────────────────
-def _warm_cache_background():
-    time.sleep(8)   # after sp500 warm-up (which fires at t+3s)
-    try:
-        get_nasdaq_quotes()
-    except Exception:
-        pass
+# ── Periodic background refresh (every 4 min, TTL is 5 min) ──────────────────
+def _cache_refresh_loop():
+    time.sleep(10)  # start after sp500 warm-up
+    while True:
+        try:
+            _do_refresh()
+        except Exception:
+            pass
+        time.sleep(240)
 
-
-threading.Thread(target=_warm_cache_background, daemon=True).start()
+threading.Thread(target=_cache_refresh_loop, daemon=True).start()

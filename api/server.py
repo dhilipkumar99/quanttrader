@@ -420,6 +420,65 @@ def sp500_screener(
     return {"results": filtered[:limit], "total_matched": len(filtered)}
 
 
+@app.get("/api/scanner/quotes")
+def scanner_quotes(universe: str = "both", limit: int = 1000, sort: str = "volume"):
+    """
+    Combined S&P500 + NASDAQ scanner quotes. Served instantly from cache.
+    Adds vol_surge (today vol / 30d avg vol) and rs_rank (relative strength rank).
+    universe: sp500 | nasdaq | both
+    sort: volume | change_pct | rs_rank | vol_surge | market_cap
+    """
+    rows: list[dict] = []
+
+    if universe in ("sp500", "both"):
+        for q in get_sp500_quotes():
+            rows.append({**q, "universe": "sp500"})
+
+    if universe in ("nasdaq", "both"):
+        for q in get_nasdaq_quotes():
+            rows.append({**q, "universe": "nasdaq"})
+
+    if not rows:
+        return {"quotes": [], "total": 0, "universe": universe, "cached": True}
+
+    # Deduplicate (NASDAQ module excludes S&P symbols, but guard anyway)
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for q in rows:
+        if q["symbol"] not in seen:
+            seen.add(q["symbol"])
+            deduped.append(q)
+    rows = deduped
+
+    # Compute relative-strength rank (percentile of change_pct within universe)
+    changes = sorted(q.get("change_pct", 0) for q in rows)
+    n = len(changes)
+    for q in rows:
+        c = q.get("change_pct", 0)
+        rank = sum(1 for x in changes if x <= c) / n * 100
+        q["rs_rank"] = round(rank, 1)
+
+    # Volume surge: today vol / median vol of all stocks (proxy for unusual activity)
+    vols = sorted(q.get("volume", 0) for q in rows if q.get("volume", 0) > 0)
+    median_vol = vols[len(vols) // 2] if vols else 1
+    for q in rows:
+        q["vol_surge"] = round(q.get("volume", 0) / max(median_vol, 1), 2)
+
+    # Sort
+    if sort == "change_pct":
+        rows.sort(key=lambda x: abs(x.get("change_pct", 0)), reverse=True)
+    elif sort == "rs_rank":
+        rows.sort(key=lambda x: x.get("rs_rank", 0), reverse=True)
+    elif sort == "vol_surge":
+        rows.sort(key=lambda x: x.get("vol_surge", 0), reverse=True)
+    elif sort == "market_cap":
+        rows.sort(key=lambda x: x.get("market_cap", 0), reverse=True)
+    else:  # volume
+        rows.sort(key=lambda x: x.get("volume", 0), reverse=True)
+
+    return {"quotes": rows[:limit], "total": len(rows), "universe": universe, "cached": True}
+
+
 @app.get("/api/portfolio/risk")
 def portfolio_risk(symbols: str = "AAPL,MSFT,NVDA", period: str = "1y"):
     """

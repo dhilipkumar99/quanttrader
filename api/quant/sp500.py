@@ -32,7 +32,8 @@ SP500_SYMBOLS = _load_sp500_symbols()
 # ── In-memory quote cache ──────────────────────────────────────────────────────
 _quote_cache: dict[str, dict] = {}
 _cache_lock  = threading.Lock()
-_QUOTE_TTL   = 20  # seconds
+_QUOTE_TTL   = 300  # 5 minutes — batch fetch takes 2+ min, must outlast the fetch
+_refresh_running = False  # prevent concurrent refreshes
 
 
 def _batch_fetch_quotes(symbols: list[str]) -> dict[str, dict]:
@@ -131,29 +132,51 @@ def _batch_fetch_quotes(symbols: list[str]) -> dict[str, dict]:
     return out
 
 
+def _do_refresh() -> None:
+    """Blocking fetch of all symbols, updates cache. Call from background thread only."""
+    global _refresh_running
+    _refresh_running = True
+    try:
+        results: dict[str, dict] = {}
+        chunk_size = 100
+        for i in range(0, len(SP500_SYMBOLS), chunk_size):
+            chunk = SP500_SYMBOLS[i : i + chunk_size]
+            results.update(_batch_fetch_quotes(chunk))
+        with _cache_lock:
+            _quote_cache.update(results)
+    except Exception:
+        pass
+    finally:
+        _refresh_running = False
+
+
 def get_sp500_quotes(force_refresh: bool = False) -> list[dict]:
     """
     Return quotes for all S&P 500 symbols.
-    Cached for 20 seconds. On first call, fetches in chunks of 100.
+    Serves from cache immediately if any data exists. Triggers a background refresh
+    when cache is stale. TTL=300s so the cache outlasts the 2-min fetch time.
     """
+    global _refresh_running
     now = time.time()
     with _cache_lock:
-        # Check if we have a recent full snapshot
         fresh = [v for v in _quote_cache.values() if (now - v.get("ts", 0)) < _QUOTE_TTL]
-        if not force_refresh and len(fresh) >= len(SP500_SYMBOLS) * 0.8:
-            return sorted(fresh, key=lambda x: x.get("market_cap", 0), reverse=True)
+        stale = [v for v in _quote_cache.values()]
 
-    # Fetch in chunks of 100 to avoid yfinance request limits
-    results = {}
-    chunk_size = 100
-    for i in range(0, len(SP500_SYMBOLS), chunk_size):
-        chunk = SP500_SYMBOLS[i : i + chunk_size]
-        results.update(_batch_fetch_quotes(chunk))
+    # If we have fresh data (>80% coverage), return immediately
+    if not force_refresh and len(fresh) >= len(SP500_SYMBOLS) * 0.8:
+        return sorted(fresh, key=lambda x: x.get("market_cap", 0), reverse=True)
 
+    # Stale but not empty — serve stale data and refresh in background
+    if stale and not _refresh_running:
+        threading.Thread(target=_do_refresh, daemon=True).start()
+        return sorted(stale, key=lambda x: x.get("market_cap", 0), reverse=True)
+
+    # Cache is empty — must block (first cold start)
+    if not _refresh_running:
+        _do_refresh()
     with _cache_lock:
-        _quote_cache.update(results)
-
-    return sorted(results.values(), key=lambda x: x.get("market_cap", 0), reverse=True)
+        all_data = list(_quote_cache.values())
+    return sorted(all_data, key=lambda x: x.get("market_cap", 0), reverse=True)
 
 
 def get_sp500_quote(symbol: str) -> Optional[dict]:
@@ -176,13 +199,15 @@ def get_sp500_symbols() -> list[str]:
     return list(SP500_SYMBOLS)
 
 
-# ── Background warm-up thread ─────────────────────────────────────────────────
-def _warm_cache_background():
-    """Pre-warm the quote cache on server startup (non-blocking)."""
-    time.sleep(3)  # let server start first
-    try:
-        get_sp500_quotes()
-    except Exception:
-        pass
+# ── Background warm-up + periodic refresh ────────────────────────────────────
+def _cache_refresh_loop():
+    """Warm cache on startup, then refresh every 4 minutes so TTL (5min) never expires."""
+    time.sleep(5)  # let server fully start
+    while True:
+        try:
+            _do_refresh()
+        except Exception:
+            pass
+        time.sleep(240)  # 4-minute interval
 
-threading.Thread(target=_warm_cache_background, daemon=True).start()
+threading.Thread(target=_cache_refresh_loop, daemon=True).start()

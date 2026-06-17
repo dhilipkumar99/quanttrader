@@ -52,6 +52,12 @@ export const marketApi = {
   sectors: () => get<{ sectors: SectorData[] }>("/api/market/sectors", 20_000),
   movers:  (limit = 10) => get<{ gainers: MarketMover[]; losers: MarketMover[] }>(`/api/market/movers?limit=${limit}`, 25_000),
 
+  // ── Combined scanner (S&P 500 + NASDAQ, served from background cache) ───────
+  scannerQuotes: (universe: "sp500" | "nasdaq" | "both" = "both", sort = "volume", limit = 1000) =>
+    get<{ quotes: (SP500Quote & { universe: string; rs_rank: number; vol_surge: number })[]; total: number }>(
+      `/api/scanner?universe=${universe}&sort=${sort}&limit=${limit}`, 15_000
+    ),
+
   // ── S&P 500 ───────────────────────────────────────────────────────────────
   sp500Symbols: () => get<{ symbols: string[]; count: number }>("/api/sp500/symbols", 5_000),
   sp500Quotes:  (sort = "market_cap", limit = 503) =>

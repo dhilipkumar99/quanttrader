@@ -2,186 +2,181 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { marketApi } from "@/lib/marketApi";
 import { api } from "@/lib/api";
-import type { SP500Quote, WatchlistItem } from "@/types/quant";
-import { cn } from "@/lib/utils";
-import { RefreshCw, Search, Zap } from "lucide-react";
+import type { WatchlistItem } from "@/types/quant";
+import { RefreshCw, Search, Zap, TrendingUp, TrendingDown, Activity } from "lucide-react";
 
-// ── Windowed table — only renders visible rows + a small buffer ───────────────
-// This keeps DOM nodes ~constant regardless of total dataset size.
-const ROW_HEIGHT = 33; // px per row
-const WINDOW_BUFFER = 10; // extra rows above/below viewport
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-function VirtualTable({
-  rows,
-  onSelect,
-  SignalBadge,
-}: {
-  rows: SP500Quote[];
-  onSelect: (sym: string) => void;
-  signals: Record<string, WatchlistItem>;
-  SignalBadge: (props: { sym: string }) => React.ReactElement | null;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const containerHeight = 520; // px — fixed viewport
+interface ScanRow {
+  symbol: string;
+  price: number;
+  change_pct: number;
+  volume: number;
+  market_cap: number;
+  universe: string;
+  rs_rank: number;   // 0–100 percentile of change_pct within universe
+  vol_surge: number; // today vol / median vol
+}
 
-  const totalHeight = rows.length * ROW_HEIGHT;
-  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - WINDOW_BUFFER);
-  const endIdx   = Math.min(rows.length, Math.ceil((scrollTop + containerHeight) / ROW_HEIGHT) + WINDOW_BUFFER);
-  const visibleRows = rows.slice(startIdx, endIdx);
+type SortKey = "symbol" | "price" | "change_pct" | "volume" | "market_cap" | "signal" | "rs_rank" | "vol_surge";
+type SortDir = "asc" | "desc";
+type Universe = "both" | "sp500" | "nasdaq";
+type Filter = "all" | "gainers" | "losers" | "vol_surge" | "long" | "short" | "overbought" | "oversold";
 
+const MONO = "'SF Mono','Fira Code',monospace";
+const SERIF = "'Palatino Linotype',Palatino,serif";
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
+
+function fmtMktCap(n: number) {
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9)  return `$${(n / 1e9).toFixed(1)}B`;
+  return "—";
+}
+function fmtVol(n: number) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}K`;
+  return n.toString();
+}
+
+// ── Sector lookup ─────────────────────────────────────────────────────────────
+
+const SECTOR: Record<string, string> = {
+  AAPL:"Tech",MSFT:"Tech",NVDA:"Tech",AMZN:"Cons",GOOGL:"Comm",META:"Comm",TSLA:"Auto",
+  JPM:"Fin",V:"Fin","BRK-B":"Fin",UNH:"Health",XOM:"Energy",LLY:"Health",JNJ:"Health",
+  PG:"Staples",MA:"Fin",HD:"Cons",MRK:"Health",AVGO:"Tech",CVX:"Energy",
+  COST:"Staples",ABBV:"Health",PEP:"Staples",KO:"Staples",WMT:"Staples",
+  BAC:"Fin",TMO:"Health",CRM:"Tech",NFLX:"Comm",ORCL:"Tech",ADBE:"Tech",
+  CSCO:"Tech",INTC:"Tech",AMD:"Tech",QCOM:"Tech",TXN:"Tech",MU:"Tech",
+  GS:"Fin",MS:"Fin",WFC:"Fin",C:"Fin",RTX:"Indust",HON:"Indust",CAT:"Indust",
+  ZM:"Tech",DOCU:"Tech",TWLO:"Tech",OKTA:"Tech",NET:"Tech",SNOW:"Tech",
+  MDB:"Tech",ZS:"Tech",SHOP:"Tech",ROKU:"Tech",SPOT:"Comm",
+};
+
+// ── RS rank badge ─────────────────────────────────────────────────────────────
+
+function RsBadge({ rank }: { rank: number }) {
+  const color = rank >= 80 ? "#1A6B4A" : rank >= 60 ? "#B45309" : rank <= 20 ? "#C41E3A" : "var(--text-muted)";
+  const label = rank >= 80 ? "Strong" : rank >= 60 ? "Above Avg" : rank <= 20 ? "Weak" : "Avg";
   return (
-    <div
-      ref={containerRef}
-      style={{ height: `${containerHeight}px`, overflowY: "auto", position: "relative" }}
-      onScroll={e => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-    >
-      {/* Total height spacer */}
-      <div style={{ height: `${totalHeight}px`, position: "relative" }}>
-        {/* Visible row block */}
-        <div style={{ position: "absolute", top: `${startIdx * ROW_HEIGHT}px`, left: 0, right: 0 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
-            <tbody>
-              {visibleRows.map((q) => {
-                const up        = q.change_pct >= 0;
-                const intensity = Math.min(Math.abs(q.change_pct) / 3, 1);
-                return (
-                  <tr
-                    key={q.symbol}
-                    style={{ cursor: "pointer", height: `${ROW_HEIGHT}px`, borderBottom: "1px solid var(--border)" }}
-                    onClick={() => onSelect(q.symbol)}
-                    onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-raised)")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <td style={{ width: "90px", textAlign: "left", paddingLeft: "12px" }}>
-                      <span style={{ fontFamily: "'SF Mono','Fira Code',monospace", fontSize: "12px", fontWeight: 700, color: "var(--text-primary)" }}>{q.symbol}</span>
-                    </td>
-                    <td style={{ width: "56px", fontSize: "10px", color: "var(--text-muted)", fontFamily: "'Palatino Linotype',serif" }}>
-                      {SECTOR_MAP[q.symbol] ?? "—"}
-                    </td>
-                    <td style={{ width: "72px", textAlign: "right", fontFamily: "'SF Mono','Fira Code',monospace", fontSize: "11px", color: "var(--text-primary)" }}>
-                      ${q.price.toFixed(2)}
-                    </td>
-                    <td style={{ width: "72px", textAlign: "right" }}>
-                      <span style={{ fontFamily: "'SF Mono','Fira Code',monospace", fontSize: "11px", fontWeight: 600, color: up ? "var(--green)" : "var(--red)" }}>
-                        {up ? "+" : ""}{q.change_pct.toFixed(2)}%
-                      </span>
-                    </td>
-                    <td style={{ width: "76px", textAlign: "right", fontFamily: "'SF Mono','Fira Code',monospace", fontSize: "10px", color: "var(--text-secondary)" }}>
-                      {q.volume > 1_000_000 ? `${(q.volume / 1_000_000).toFixed(1)}M` : q.volume.toLocaleString()}
-                    </td>
-                    <td style={{ width: "80px", textAlign: "right", fontFamily: "'SF Mono','Fira Code',monospace", fontSize: "10px", color: "var(--text-secondary)" }}>
-                      {q.market_cap >= 1e12 ? `$${(q.market_cap / 1e12).toFixed(2)}T` : q.market_cap >= 1e9 ? `$${(q.market_cap / 1e9).toFixed(1)}B` : "—"}
-                    </td>
-                    <td style={{ width: "56px" }}>
-                      <div style={{
-                        display: "inline-block", width: "48px", height: "14px",
-                        background: up ? `rgba(0,212,170,${intensity * 0.7 + 0.1})` : `rgba(255,71,87,${intensity * 0.7 + 0.1})`,
-                      }} />
-                    </td>
-                    <td style={{ width: "96px" }} onClick={e => e.stopPropagation()}>
-                      <SignalBadge sym={q.symbol} />
-                    </td>
-                    <td style={{ width: "72px", textAlign: "right", paddingRight: "12px" }}>
-                      <span style={{ color: "var(--blue)", fontSize: "10px" }}>Analyse →</span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    <span style={{
+      fontFamily: MONO, fontSize: "9px", fontWeight: 600,
+      color, padding: "1px 5px",
+      border: `1px solid ${color}44`,
+      background: `${color}11`,
+    }}>
+      {label} {rank.toFixed(0)}
+    </span>
   );
 }
 
-interface Props { onSelectSymbol: (s: string) => void; }
+// ── Vol surge badge ───────────────────────────────────────────────────────────
 
-type SortKey = "symbol" | "price" | "change_pct" | "volume" | "market_cap" | "signal";
-type SortDir = "asc" | "desc";
-type Filter  = "all" | "gainers" | "losers" | "flat" | "long" | "short";
-
-const SECTOR_MAP: Record<string, string> = {
-  AAPL:"Tech",MSFT:"Tech",NVDA:"Tech",AMZN:"Cons",GOOGL:"Comm",META:"Comm",TSLA:"Auto",
-  JPM:"Fin",V:"Fin",JNJ:"Health",XOM:"Energy",UNH:"Health",PG:"Staples",HD:"Cons",
-  BAC:"Fin",MA:"Fin",ABBV:"Health",KO:"Staples",PEP:"Staples",AVGO:"Tech",
-  LLY:"Health",MRK:"Health",COST:"Staples",WMT:"Staples",CVX:"Energy",
-  CRM:"Tech",ORCL:"Tech",NFLX:"Comm",ADBE:"Tech",CSCO:"Tech",INTC:"Tech",
-  AMD:"Tech",QCOM:"Tech",TXN:"Tech",MU:"Tech",AMAT:"Tech",LRCX:"Tech",KLAC:"Tech",
-};
-
-// Map signal int → sortable number
-function signalOrder(sig: number | undefined): number {
-  if (sig === 1)  return 2;
-  if (sig === -1) return 0;
-  return 1; // FLAT / unknown
+function VolBadge({ surge }: { surge: number }) {
+  if (surge < 1.5) return null;
+  const hot = surge >= 3;
+  return (
+    <span style={{
+      fontFamily: SERIF, fontSize: "8px", fontWeight: 600,
+      color: hot ? "#B45309" : "#6B5F52",
+      padding: "1px 4px",
+      border: `1px solid ${hot ? "#B4530944" : "var(--border)"}`,
+      background: hot ? "rgba(180,83,9,0.08)" : "var(--bg-raised)",
+      marginLeft: "3px",
+    }}>
+      {surge.toFixed(1)}× vol
+    </span>
+  );
 }
 
+// ── Signal badge (from watchlist enrichment) ──────────────────────────────────
+
+function SignalBadge({ item }: { item: WatchlistItem | undefined }) {
+  if (!item) return <span style={{ color: "var(--text-disabled)", fontSize: "10px" }}>—</span>;
+  const conf = Math.round((item.confidence ?? 0) * 100);
+  if (item.signal === 1) return (
+    <span style={{ fontFamily: MONO, fontSize: "10px", fontWeight: 700, color: "var(--green)" }}>
+      ▲ LONG <span style={{ fontWeight: 400, opacity: 0.8 }}>{conf}%</span>
+    </span>
+  );
+  if (item.signal === -1) return (
+    <span style={{ fontFamily: MONO, fontSize: "10px", fontWeight: 700, color: "var(--red)" }}>
+      ▼ SHORT <span style={{ fontWeight: 400, opacity: 0.8 }}>{conf}%</span>
+    </span>
+  );
+  return <span style={{ color: "var(--yellow)", fontSize: "10px" }}>◆ FLAT</span>;
+}
+
+// ── Breadth arc (simple SVG arc for advancing/declining) ──────────────────────
+
+function BreadthArc({ pct, color }: { pct: number; color: string }) {
+  const r = 18; const cx = 24; const cy = 24;
+  const angle = (pct / 100) * 2 * Math.PI;
+  const x = cx + r * Math.sin(angle - Math.PI);
+  const y = cy - r * Math.cos(angle - Math.PI);
+  const large = pct > 50 ? 1 : 0;
+  return (
+    <svg width="48" height="48" viewBox="0 0 48 48">
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--border)" strokeWidth="3" />
+      <path
+        d={`M ${cx} ${cy - r} A ${r} ${r} 0 ${large} 1 ${x.toFixed(1)} ${y.toFixed(1)}`}
+        fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"
+      />
+      <text x={cx} y={cy + 4} textAnchor="middle" fontSize="9" fontFamily={MONO} fill={color} fontWeight="700">
+        {pct.toFixed(0)}%
+      </text>
+    </svg>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
+interface Props { onSelectSymbol: (s: string) => void; }
+
 export function SP500Scanner({ onSelectSymbol }: Props) {
-  const [quotes,      setQuotes]      = useState<SP500Quote[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [search,      setSearch]      = useState("");
-  const [filter,      setFilter]      = useState<Filter>("all");
-  const [sortKey,     setSortKey]     = useState<SortKey>("market_cap");
-  const [sortDir,     setSortDir]     = useState<SortDir>("desc");
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  // signal overlay: symbol → WatchlistItem
-  const [signals,       setSignals]       = useState<Record<string, WatchlistItem>>({});
-  const [signalLoading, setSignalLoading] = useState(false);
-  const [signalProgress, setSignalProgress] = useState(0); // 0–100
-  const refreshTimer  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [quotes,         setQuotes]         = useState<ScanRow[]>([]);
+  const [loading,        setLoading]        = useState(true);
+  const [universe,       setUniverse]       = useState<Universe>("both");
+  const [search,         setSearch]         = useState("");
+  const [filter,         setFilter]         = useState<Filter>("all");
+  const [sortKey,        setSortKey]        = useState<SortKey>("vol_surge");
+  const [sortDir,        setSortDir]        = useState<SortDir>("desc");
+  const [lastRefresh,    setLastRefresh]    = useState<Date | null>(null);
+  const [signals,        setSignals]        = useState<Record<string, WatchlistItem>>({});
+  const [signalLoading,  setSignalLoading]  = useState(false);
+  const [signalProgress, setSignalProgress] = useState(0);
   const autoLoadedRef = useRef(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (uni: Universe = universe) => {
+    setLoading(true);
     try {
-      const data = await marketApi.sp500Quotes("market_cap", 503);
+      const data = await marketApi.scannerQuotes(uni, "volume", 1000);
       setQuotes(data.quotes ?? []);
       setLastRefresh(new Date());
     } catch {
-      // silent
+      // silent — stale cache will serve
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [universe]);
 
   useEffect(() => {
-    load();
-    refreshTimer.current = setInterval(load, 30_000);
-    return () => { if (refreshTimer.current) clearInterval(refreshTimer.current); };
-  }, [load]);
+    load(universe);
+    const id = setInterval(() => load(universe), 120_000); // refresh every 2 min
+    return () => clearInterval(id);
+  }, [load, universe]);
 
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortKey(key); setSortDir("desc"); }
-  };
+  // Auto-load ML signals for the top 30 by volume on first load
+  useEffect(() => {
+    if (quotes.length > 0 && !autoLoadedRef.current) {
+      autoLoadedRef.current = true;
+      const top30 = quotes.slice(0, 30).map(q => q.symbol);
+      loadSignalBatch(top30);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quotes]);
 
-  const filtered = useMemo(() => {
-    return quotes
-      .filter(q => {
-        if (search && !q.symbol.includes(search.toUpperCase())) return false;
-        if (filter === "gainers") return q.change_pct > 0.5;
-        if (filter === "losers")  return q.change_pct < -0.5;
-        if (filter === "flat")    return Math.abs(q.change_pct) <= 0.5;
-        if (filter === "long")  return signals[q.symbol]?.signal === 1;
-        if (filter === "short") return signals[q.symbol]?.signal === -1;
-        return true;
-      })
-      .sort((a, b) => {
-        const mul = sortDir === "asc" ? 1 : -1;
-        if (sortKey === "signal") {
-          return (signalOrder(signals[a.symbol]?.signal) -
-                  signalOrder(signals[b.symbol]?.signal)) * mul;
-        }
-        const av = a[sortKey as Exclude<SortKey, "signal">];
-        const bv = b[sortKey as Exclude<SortKey, "signal">];
-        return typeof av === "string"
-          ? av.localeCompare(String(bv)) * mul
-          : ((av as number) - (bv as number)) * mul;
-      });
-  }, [quotes, search, filter, sortKey, sortDir, signals]);
-
-  // Batch-load signals in groups of 10 for given symbol list
   const loadSignalBatch = useCallback(async (syms: string[]) => {
     if (!syms.length) return;
     setSignalLoading(true);
@@ -194,208 +189,424 @@ export function SP500Scanner({ onSelectSymbol }: Props) {
         const map: Record<string, WatchlistItem> = {};
         for (const item of data.watchlist) map[item.symbol] = item;
         setSignals(prev => ({ ...prev, ...map }));
-      } catch { /* non-critical — continue next batch */ }
+      } catch { /* non-critical */ }
       setSignalProgress(Math.round(((i + BATCH) / syms.length) * 100));
     }
     setSignalLoading(false);
     setSignalProgress(100);
   }, []);
 
-  // Auto-warm: top 20 by market cap as soon as quotes arrive (once per mount)
-  useEffect(() => {
-    if (quotes.length > 0 && !autoLoadedRef.current) {
-      autoLoadedRef.current = true;
-      const top20 = quotes.slice(0, 20).map(q => q.symbol);
-      loadSignalBatch(top20);
-    }
-  }, [quotes, loadSignalBatch]);
-
-  // Manual "Load More" — next 80 (total 100)
-  const loadMore = useCallback(() => {
+  const loadMoreSignals = useCallback(() => {
     const already = new Set(Object.keys(signals));
-    const next = quotes.filter(q => !already.has(q.symbol)).slice(0, 80).map(q => q.symbol);
+    const next = quotes.filter(q => !already.has(q.symbol)).slice(0, 70).map(q => q.symbol);
     loadSignalBatch(next);
   }, [quotes, signals, loadSignalBatch]);
 
-  // Stats
-  const gainers = quotes.filter(q => q.change_pct > 0).length;
-  const losers  = quotes.filter(q => q.change_pct < 0).length;
-  const flat    = quotes.length - gainers - losers;
-  const avgChg  = quotes.length ? quotes.reduce((s, q) => s + q.change_pct, 0) / quotes.length : 0;
-  const longSig  = Object.values(signals).filter(s => s.signal === 1).length;
-  const shortSig = Object.values(signals).filter(s => s.signal === -1).length;
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir("desc"); }
+  };
 
-  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
-    <button onClick={() => toggleSort(k)} className="flex items-center gap-0.5 hover:text-white transition-colors">
-      {label}
-      {sortKey === k && <span className="text-[8px]">{sortDir === "asc" ? "▲" : "▼"}</span>}
-    </button>
+  const filtered = useMemo(() => {
+    return quotes
+      .filter(q => {
+        if (search && !q.symbol.includes(search.toUpperCase())) return false;
+        switch (filter) {
+          case "gainers":   return q.change_pct > 0.5;
+          case "losers":    return q.change_pct < -0.5;
+          case "vol_surge": return q.vol_surge >= 2;
+          case "long":      return signals[q.symbol]?.signal === 1;
+          case "short":     return signals[q.symbol]?.signal === -1;
+          case "overbought":return q.rs_rank >= 85;
+          case "oversold":  return q.rs_rank <= 15;
+          default:          return true;
+        }
+      })
+      .sort((a, b) => {
+        const mul = sortDir === "asc" ? 1 : -1;
+        if (sortKey === "signal") {
+          const sigOrder = (s: WatchlistItem | undefined) => s?.signal === 1 ? 2 : s?.signal === -1 ? 0 : 1;
+          return (sigOrder(signals[a.symbol]) - sigOrder(signals[b.symbol])) * mul;
+        }
+        const av = a[sortKey as Exclude<SortKey, "signal">] ?? 0;
+        const bv = b[sortKey as Exclude<SortKey, "signal">] ?? 0;
+        return typeof av === "string" ? (av as string).localeCompare(bv as string) * mul : ((av as number) - (bv as number)) * mul;
+      });
+  }, [quotes, search, filter, sortKey, sortDir, signals]);
+
+  // ── Derived stats ────────────────────────────────────────────────────────────
+  const gainers   = quotes.filter(q => q.change_pct > 0).length;
+  const losers    = quotes.filter(q => q.change_pct < 0).length;
+  const volSurge  = quotes.filter(q => q.vol_surge >= 2).length;
+  const avgChg    = quotes.length ? quotes.reduce((s, q) => s + q.change_pct, 0) / quotes.length : 0;
+  const sp500ct   = quotes.filter(q => q.universe === "sp500").length;
+  const nasdaqct  = quotes.filter(q => q.universe === "nasdaq").length;
+  const longSig   = Object.values(signals).filter(s => s.signal === 1).length;
+  const shortSig  = Object.values(signals).filter(s => s.signal === -1).length;
+  const topGainer = quotes.reduce((b, q) => q.change_pct > (b?.change_pct ?? -Infinity) ? q : b, quotes[0] as ScanRow | undefined);
+  const topLoser  = quotes.reduce((b, q) => q.change_pct < (b?.change_pct ?? Infinity) ? q : b, quotes[0] as ScanRow | undefined);
+  const breadthPct = quotes.length ? (gainers / quotes.length) * 100 : 50;
+
+  const SortTh = ({ k, label, align = "right" }: { k: SortKey; label: string; align?: "left" | "right" }) => (
+    <th
+      onClick={() => toggleSort(k)}
+      style={{
+        textAlign: align, cursor: "pointer", padding: "7px 10px",
+        fontFamily: SERIF, fontSize: "9px", fontWeight: 600,
+        letterSpacing: "0.14em", textTransform: "uppercase",
+        color: sortKey === k ? "var(--text-primary)" : "var(--text-muted)",
+        background: "var(--bg-raised)", borderBottom: "2px solid var(--border)",
+        whiteSpace: "nowrap", userSelect: "none",
+      }}
+    >
+      {label}{sortKey === k ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+    </th>
   );
 
-  function SignalBadge({ sym }: { sym: string }) {
-    const item = signals[sym];
-    if (!item) return <span style={{ color: "var(--text-disabled)", fontSize: "10px" }}>—</span>;
-    const sig  = item.signal;
-    const conf = Math.round((item.confidence ?? 0) * 100);
-    if (sig === 1)  return (
-      <span style={{ color: "var(--green)", fontSize: "10px", fontWeight: 700 }}>
-        ▲ LONG <span style={{ fontWeight: 400 }}>{conf}%</span>
-      </span>
-    );
-    if (sig === -1) return (
-      <span style={{ color: "var(--red)", fontSize: "10px", fontWeight: 700 }}>
-        ▼ SHORT <span style={{ fontWeight: 400 }}>{conf}%</span>
-      </span>
-    );
-    return <span style={{ color: "var(--yellow)", fontSize: "10px" }}>◆ FLAT</span>;
-  }
-
   return (
-    <div className="space-y-3">
-      {/* Header stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {[
-          { label: "S&P 500 Stocks",  value: `${quotes.length}/503` },
-          { label: "Advancing",       value: gainers, color: "var(--green)" },
-          { label: "Declining",       value: losers,  color: "var(--red)" },
-          { label: "Avg Change",      value: `${avgChg >= 0 ? "+" : ""}${avgChg.toFixed(2)}%`, color: avgChg >= 0 ? "var(--green)" : "var(--red)" },
-        ].map(item => (
-          <div key={item.label} className="panel p-2">
-            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>{item.label}</div>
-            <div className="text-lg font-bold num mt-0.5" style={{ color: (item as { color?: string }).color ?? "var(--text-primary)" }}>
-              {item.value}
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+
+      {/* ── Dashboard strip ────────────────────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: "8px" }}>
+        {/* Breadth arc */}
+        <div className="panel" style={{ padding: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+          <BreadthArc pct={breadthPct} color={breadthPct >= 50 ? "#1A6B4A" : "#C41E3A"} />
+          <div>
+            <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginBottom: "2px" }}>Market Breadth</div>
+            <div style={{ fontFamily: MONO, fontSize: "13px", fontWeight: 700, color: breadthPct >= 50 ? "var(--green)" : "var(--red)" }}>
+              {gainers}▲ / {losers}▼
+            </div>
+            <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginTop: "1px" }}>
+              {breadthPct >= 50 ? "Bullish" : "Bearish"} breadth
             </div>
           </div>
-        ))}
+        </div>
+
+        {/* Avg change */}
+        <div className="panel" style={{ padding: "12px" }}>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginBottom: "4px" }}>Avg Move</div>
+          <div style={{ fontFamily: MONO, fontSize: "18px", fontWeight: 700, color: avgChg >= 0 ? "var(--green)" : "var(--red)" }}>
+            {avgChg >= 0 ? "+" : ""}{avgChg.toFixed(2)}%
+          </div>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginTop: "2px" }}>
+            {quotes.length} stocks tracked
+          </div>
+        </div>
+
+        {/* Top mover */}
+        <div className="panel" style={{ padding: "12px", cursor: "pointer" }} onClick={() => topGainer && onSelectSymbol(topGainer.symbol)}>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginBottom: "4px" }}>Top Gainer</div>
+          {topGainer ? (
+            <>
+              <div style={{ fontFamily: MONO, fontSize: "14px", fontWeight: 700, color: "var(--text-primary)" }}>{topGainer.symbol}</div>
+              <div style={{ fontFamily: MONO, fontSize: "13px", fontWeight: 700, color: "var(--green)" }}>+{topGainer.change_pct.toFixed(2)}%</div>
+            </>
+          ) : <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>—</div>}
+        </div>
+
+        {/* Top loser */}
+        <div className="panel" style={{ padding: "12px", cursor: "pointer" }} onClick={() => topLoser && onSelectSymbol(topLoser.symbol)}>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginBottom: "4px" }}>Top Loser</div>
+          {topLoser ? (
+            <>
+              <div style={{ fontFamily: MONO, fontSize: "14px", fontWeight: 700, color: "var(--text-primary)" }}>{topLoser.symbol}</div>
+              <div style={{ fontFamily: MONO, fontSize: "13px", fontWeight: 700, color: "var(--red)" }}>{topLoser.change_pct.toFixed(2)}%</div>
+            </>
+          ) : <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>—</div>}
+        </div>
+
+        {/* Vol surge count */}
+        <div className="panel" style={{ padding: "12px" }}>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginBottom: "4px" }}>Vol Surges</div>
+          <div style={{ fontFamily: MONO, fontSize: "18px", fontWeight: 700, color: volSurge > 10 ? "#B45309" : "var(--text-primary)" }}>
+            {volSurge}
+          </div>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginTop: "2px" }}>≥2× median vol</div>
+        </div>
+
+        {/* ML signal count */}
+        <div className="panel" style={{ padding: "12px" }}>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginBottom: "4px" }}>ML Signals</div>
+          <div style={{ display: "flex", gap: "8px", alignItems: "baseline" }}>
+            <span style={{ fontFamily: MONO, fontSize: "16px", fontWeight: 700, color: "var(--green)" }}>{longSig}L</span>
+            <span style={{ fontFamily: MONO, fontSize: "16px", fontWeight: 700, color: "var(--red)" }}>{shortSig}S</span>
+          </div>
+          <div style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)", marginTop: "2px" }}>
+            {Object.keys(signals).length} scanned · {sp500ct} S&P / {nasdaqct} NQ
+          </div>
+        </div>
       </div>
 
-      {/* Controls */}
-      <div className="panel">
-        <div className="panel-header">
-          <span>S&P 500 Real-Time Scanner</span>
-          <div className="flex items-center gap-3">
-            {/* Signal status / load more */}
-            <div className="flex items-center gap-2">
-              {signalLoading ? (
-                <div className="flex items-center gap-2">
-                  <Zap className="h-3 w-3 animate-pulse" style={{ color: "var(--blue)" }} />
-                  <div>
-                    <div className="text-[9px]" style={{ color: "var(--text-muted)" }}>
-                      Scanning… {signalProgress}%
-                    </div>
-                    <div className="h-0.5 w-24 mt-0.5" style={{ background: "var(--bg-active)" }}>
-                      <div style={{ width: `${signalProgress}%`, height: "100%", background: "var(--blue)", transition: "width 0.3s" }} />
-                    </div>
-                  </div>
-                </div>
-              ) : Object.keys(signals).length > 0 ? (
-                <div className="flex items-center gap-2">
-                  <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
-                    <span style={{ color: "var(--green)", fontWeight: 700 }}>{longSig}L</span>
-                    {" · "}
-                    <span style={{ color: "var(--red)", fontWeight: 700 }}>{shortSig}S</span>
-                    {" · "}
-                    <span style={{ color: "var(--text-disabled)" }}>{Object.keys(signals).length} scanned</span>
-                  </span>
-                  {Object.keys(signals).length < 100 && (
-                    <button
-                      onClick={loadMore}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[9px]"
-                      style={{ background: "var(--blue-dim)", color: "var(--blue)", border: "1px solid var(--blue)44" }}
-                    >
-                      <Zap className="h-2.5 w-2.5" /> Load more
-                    </button>
-                  )}
-                </div>
-              ) : null}
-            </div>
+      {/* ── Scanner table ───────────────────────────────────────────────────── */}
+      <div className="panel overflow-hidden">
+        {/* Header */}
+        <div className="panel-header" style={{ flexWrap: "wrap", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Activity size={13} style={{ color: "var(--text-muted)" }} />
+            <span>Opportunity Scanner</span>
             {lastRefresh && (
-              <span style={{ color: "var(--text-muted)" }} className="text-[10px]">
-                Updated {lastRefresh.toLocaleTimeString()}
+              <span style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)" }}>
+                {lastRefresh.toLocaleTimeString()}
               </span>
             )}
-            <button onClick={load} style={{ color: "var(--text-muted)" }} className="hover:text-white transition-colors">
-              <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginLeft: "auto", flexWrap: "wrap" }}>
+            {/* Universe tabs */}
+            {(["both", "sp500", "nasdaq"] as Universe[]).map(u => (
+              <button
+                key={u}
+                onClick={() => { setUniverse(u); autoLoadedRef.current = false; load(u); }}
+                style={{
+                  fontFamily: SERIF, fontSize: "9px", fontWeight: 600,
+                  letterSpacing: "0.1em", textTransform: "uppercase",
+                  padding: "3px 10px",
+                  background: universe === u ? "var(--bg-active)" : "transparent",
+                  color: universe === u ? "var(--text-primary)" : "var(--text-muted)",
+                  border: `1px solid ${universe === u ? "var(--border)" : "transparent"}`,
+                  cursor: "pointer",
+                }}
+              >
+                {u === "both" ? "S&P + NQ" : u === "sp500" ? "S&P 500" : "NASDAQ"}
+              </button>
+            ))}
+            {/* Signal scan */}
+            {signalLoading ? (
+              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                <Zap size={10} style={{ color: "var(--blue)", animation: "pulse 1s ease-in-out infinite" }} />
+                <span style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)" }}>
+                  Scanning {signalProgress}%
+                </span>
+                <div style={{ width: "48px", height: "2px", background: "var(--bg-active)" }}>
+                  <div style={{ width: `${signalProgress}%`, height: "100%", background: "var(--blue)", transition: "width 0.3s" }} />
+                </div>
+              </div>
+            ) : Object.keys(signals).length < Math.min(quotes.length, 100) && (
+              <button
+                onClick={loadMoreSignals}
+                style={{
+                  display: "flex", alignItems: "center", gap: "4px",
+                  fontFamily: SERIF, fontSize: "9px", fontWeight: 600,
+                  padding: "3px 8px", cursor: "pointer",
+                  background: "var(--blue-dim)", color: "var(--blue)",
+                  border: "1px solid var(--blue)44",
+                }}
+              >
+                <Zap size={9} /> Scan signals
+              </button>
+            )}
+            <button onClick={() => load(universe)} style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer", display: "flex" }}>
+              <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
             </button>
           </div>
         </div>
 
         {/* Filter bar */}
-        <div className="flex items-center gap-3 px-3 py-2" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-raised)" }}>
-          <div className="flex items-center gap-1.5">
-            <Search className="h-3 w-3" style={{ color: "var(--text-muted)" }} />
+        <div style={{
+          display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap",
+          padding: "6px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-raised)",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px", border: "1px solid var(--border)", padding: "2px 6px" }}>
+            <Search size={10} style={{ color: "var(--text-muted)" }} />
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Filter symbol…"
-              className="et-input w-28 text-xs"
-              style={{ padding: "2px 6px" }}
+              placeholder="Symbol…"
+              style={{
+                fontFamily: MONO, fontSize: "11px", width: "72px",
+                background: "transparent", border: "none", outline: "none",
+                color: "var(--text-primary)",
+              }}
             />
           </div>
-          <div className="flex gap-1 flex-wrap">
-            {(["all","gainers","losers","flat","long","short"] as Filter[]).map(f => (
+          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+            {([
+              ["all",       `All (${quotes.length})`],
+              ["gainers",   `▲ Gainers`],
+              ["losers",    `▼ Losers`],
+              ["vol_surge", `⚡ Vol Surge (${volSurge})`],
+              ["long",      `▲ Long (${longSig})`],
+              ["short",     `▼ Short (${shortSig})`],
+              ["overbought",`RS≥85`],
+              ["oversold",  `RS≤15`],
+            ] as [Filter, string][]).map(([f, label]) => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className="px-2.5 py-1 text-[10px] font-medium transition-colors capitalize"
                 style={{
-                  background: filter === f ? "var(--blue-dim)" : "transparent",
-                  color: filter === f ? "var(--blue)" : "var(--text-muted)",
-                  border: `1px solid ${filter === f ? "var(--blue)" : "var(--border)"}`,
+                  fontFamily: SERIF, fontSize: "9px", fontWeight: 600,
+                  letterSpacing: "0.08em", textTransform: "uppercase",
+                  padding: "3px 8px", cursor: "pointer",
+                  background: filter === f
+                    ? f === "gainers" || f === "long" || f === "overbought" ? "rgba(26,107,74,0.12)"
+                    : f === "losers"  || f === "short" || f === "oversold"  ? "rgba(196,30,58,0.12)"
+                    : f === "vol_surge" ? "rgba(180,83,9,0.12)"
+                    : "var(--bg-active)"
+                    : "transparent",
+                  color: filter === f
+                    ? f === "gainers" || f === "long" || f === "overbought" ? "#1A6B4A"
+                    : f === "losers"  || f === "short" || f === "oversold"  ? "#C41E3A"
+                    : f === "vol_surge" ? "#B45309"
+                    : "var(--text-primary)"
+                    : "var(--text-muted)",
+                  border: `1px solid ${filter === f ? "currentColor" : "var(--border)"}44`,
                 }}
               >
-                {f === "all"     ? `All (${quotes.length})` :
-                 f === "gainers" ? `▲ Gainers (${gainers})` :
-                 f === "losers"  ? `▼ Losers (${losers})` :
-                 f === "flat"    ? `= Flat (${flat})` :
-                 f === "long"    ? `▲ Long (${longSig})` :
-                                   `▼ Short (${shortSig})`}
+                {label}
               </button>
             ))}
           </div>
-          <span className="ml-auto text-[10px]" style={{ color: "var(--text-muted)" }}>
-            Showing {filtered.length} stocks · auto-refresh 30s
+          <span style={{ marginLeft: "auto", fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)" }}>
+            {filtered.length} results
           </span>
         </div>
 
-        {/* Virtualized table */}
-        <div>
-          {/* Column headers (fixed — always visible) */}
-          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
-            <thead>
-              <tr style={{ background: "var(--bg-raised)", borderBottom: "2px solid var(--border)" }}>
-                <th style={{ width: "90px", textAlign: "left", paddingLeft: "12px", padding: "7px 8px 7px 12px" }}><SortBtn k="symbol" label="Symbol" /></th>
-                <th style={{ width: "56px", textAlign: "left", padding: "7px 8px", fontFamily: "'Palatino Linotype',serif", fontSize: "9px", fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)" }}>Sector</th>
-                <th style={{ width: "72px", textAlign: "right", padding: "7px 8px" }}><SortBtn k="price" label="Price" /></th>
-                <th style={{ width: "72px", textAlign: "right", padding: "7px 8px" }}><SortBtn k="change_pct" label="Chg %" /></th>
-                <th style={{ width: "76px", textAlign: "right", padding: "7px 8px" }}><SortBtn k="volume" label="Volume" /></th>
-                <th style={{ width: "80px", textAlign: "right", padding: "7px 8px" }}><SortBtn k="market_cap" label="Mkt Cap" /></th>
-                <th style={{ width: "56px", padding: "7px 8px", fontFamily: "'Palatino Linotype',serif", fontSize: "9px", fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)" }}>Heat</th>
-                <th style={{ width: "96px", padding: "7px 8px" }}><SortBtn k="signal" label="Signal" /></th>
-                <th style={{ width: "72px", padding: "7px 12px 7px 8px" }}></th>
-              </tr>
-            </thead>
-          </table>
-
-          {loading && quotes.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 gap-3">
-              <RefreshCw className="h-5 w-5 animate-spin" style={{ color: "var(--text-muted)" }} />
-              <div className="text-sm" style={{ color: "var(--text-muted)" }}>Loading all 503 S&P 500 stocks…</div>
-              <div className="text-xs" style={{ color: "var(--text-disabled)" }}>This takes ~5s on first load</div>
+        {/* Table */}
+        {loading && quotes.length === 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px", gap: "8px" }}>
+            <RefreshCw size={18} className="animate-spin" style={{ color: "var(--text-muted)" }} />
+            <div style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)" }}>
+              Loading scanner data…
             </div>
-          ) : (
-            <>
-              <VirtualTable
-                rows={filtered}
-                onSelect={onSelectSymbol}
-                signals={signals}
-                SignalBadge={SignalBadge}
-              />
-              <div className="px-3 py-1.5 text-[10px]" style={{ borderTop: "1px solid var(--border)", color: "var(--text-muted)", background: "var(--bg-raised)" }}>
-                Showing {filtered.length} stocks · scroll to browse all · auto-refresh 30s
+            <div style={{ fontFamily: SERIF, fontSize: "10px", color: "var(--text-disabled)" }}>
+              Background cache builds on first Render wake — takes ~3 min once
+            </div>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto", maxHeight: "580px", overflowY: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+              <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
+                <tr>
+                  <SortTh k="symbol"     label="Symbol"     align="left" />
+                  <th style={{ width: "52px", textAlign: "left", padding: "7px 8px", fontFamily: SERIF, fontSize: "9px", fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-muted)", background: "var(--bg-raised)", borderBottom: "2px solid var(--border)" }}>Univ</th>
+                  <SortTh k="price"      label="Price" />
+                  <SortTh k="change_pct" label="Chg%" />
+                  <SortTh k="rs_rank"    label="RS" />
+                  <SortTh k="vol_surge"  label="Vol×" />
+                  <SortTh k="volume"     label="Volume" />
+                  <SortTh k="market_cap" label="MktCap" />
+                  <SortTh k="signal"     label="Signal" />
+                  <th style={{ width: "64px", textAlign: "right", padding: "7px 12px 7px 8px", fontFamily: SERIF, fontSize: "9px", fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-muted)", background: "var(--bg-raised)", borderBottom: "2px solid var(--border)" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.slice(0, 200).map(q => {
+                  const up = q.change_pct >= 0;
+                  const abs = Math.abs(q.change_pct);
+                  const intensity = Math.min(abs / 5, 1);
+                  const isNQ = q.universe === "nasdaq";
+                  return (
+                    <tr
+                      key={q.symbol}
+                      style={{ cursor: "pointer", borderBottom: "1px solid var(--border)", height: "34px" }}
+                      onClick={() => onSelectSymbol(q.symbol)}
+                      onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-raised)")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                    >
+                      {/* Symbol */}
+                      <td style={{ padding: "6px 10px 6px 14px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                          <span style={{ fontFamily: MONO, fontSize: "12px", fontWeight: 700, color: "var(--text-primary)" }}>{q.symbol}</span>
+                          {SECTOR[q.symbol] && (
+                            <span style={{ fontFamily: SERIF, fontSize: "8px", color: "var(--text-disabled)" }}>{SECTOR[q.symbol]}</span>
+                          )}
+                        </div>
+                      </td>
+                      {/* Universe */}
+                      <td style={{ padding: "6px 8px" }}>
+                        <span style={{
+                          fontFamily: SERIF, fontSize: "8px", fontWeight: 600,
+                          letterSpacing: "0.1em", textTransform: "uppercase",
+                          color: isNQ ? "#6366f1" : "var(--text-muted)",
+                        }}>
+                          {isNQ ? "NQ" : "SP"}
+                        </span>
+                      </td>
+                      {/* Price */}
+                      <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                        <span style={{ fontFamily: MONO, fontSize: "11px", color: "var(--text-primary)" }}>
+                          ${q.price.toFixed(2)}
+                        </span>
+                      </td>
+                      {/* Change % with heatmap bar */}
+                      <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
+                          <div style={{
+                            width: `${Math.max(3, Math.round(intensity * 40))}px`,
+                            height: "10px",
+                            background: up ? `rgba(26,107,74,${0.15 + intensity * 0.6})` : `rgba(196,30,58,${0.15 + intensity * 0.6})`,
+                          }} />
+                          <span style={{ fontFamily: MONO, fontSize: "11px", fontWeight: 700, color: up ? "#1A6B4A" : "#C41E3A" }}>
+                            {up ? "+" : ""}{q.change_pct.toFixed(2)}%
+                          </span>
+                        </div>
+                      </td>
+                      {/* RS rank */}
+                      <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                        <RsBadge rank={q.rs_rank} />
+                      </td>
+                      {/* Vol surge */}
+                      <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                        {q.vol_surge >= 1.5 ? (
+                          <span style={{
+                            fontFamily: MONO, fontSize: "10px", fontWeight: 600,
+                            color: q.vol_surge >= 3 ? "#B45309" : "var(--text-secondary)",
+                          }}>
+                            {q.vol_surge.toFixed(1)}×
+                          </span>
+                        ) : (
+                          <span style={{ fontFamily: MONO, fontSize: "10px", color: "var(--text-disabled)" }}>—</span>
+                        )}
+                      </td>
+                      {/* Volume */}
+                      <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                        <span style={{ fontFamily: MONO, fontSize: "10px", color: "var(--text-secondary)" }}>
+                          {fmtVol(q.volume)}
+                        </span>
+                      </td>
+                      {/* Market cap */}
+                      <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                        <span style={{ fontFamily: MONO, fontSize: "10px", color: "var(--text-secondary)" }}>
+                          {fmtMktCap(q.market_cap)}
+                        </span>
+                      </td>
+                      {/* ML signal */}
+                      <td style={{ padding: "6px 10px" }} onClick={e => e.stopPropagation()}>
+                        <SignalBadge item={signals[q.symbol]} />
+                      </td>
+                      {/* Analyse */}
+                      <td style={{ padding: "6px 12px 6px 8px", textAlign: "right" }}>
+                        <span style={{ fontFamily: SERIF, fontSize: "9px", fontWeight: 600, color: "var(--blue)", letterSpacing: "0.06em" }}>
+                          Analyse →
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {filtered.length > 200 && (
+              <div style={{ padding: "8px 14px", fontFamily: SERIF, fontSize: "10px", color: "var(--text-muted)", borderTop: "1px solid var(--border)", background: "var(--bg-raised)" }}>
+                Showing top 200 of {filtered.length} — use filters or search to narrow
               </div>
-            </>
-          )}
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "6px 12px", borderTop: "1px solid var(--border)", background: "var(--bg-raised)",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <span style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-muted)" }}>
+              <span style={{ color: "var(--green)", fontWeight: 700 }}>{gainers}</span> advancing ·{" "}
+              <span style={{ color: "var(--red)", fontWeight: 700 }}>{losers}</span> declining ·{" "}
+              <span style={{ color: "#B45309", fontWeight: 700 }}>{volSurge}</span> vol surges
+            </span>
+          </div>
+          <span style={{ fontFamily: SERIF, fontSize: "9px", color: "var(--text-disabled)" }}>
+            Data: yfinance · refreshes 2 min · click any row to analyse
+          </span>
         </div>
       </div>
     </div>
