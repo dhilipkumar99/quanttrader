@@ -147,11 +147,15 @@ export async function wakeRender(timeoutMs = 300_000): Promise<boolean> {
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`${BASE}/api/wake`, { signal: AbortSignal.timeout(9_000) });
-      const data = await res.json() as { status?: string };
-      if (data.status === "ok") return true;
-      // "warming" or "sleeping" — keep polling
-    } catch { /* network error or Vercel timeout — keep polling */ }
-    await new Promise(r => setTimeout(r, 10_000)); // poll every 10s
+      // Only parse JSON when content-type is application/json (not Vercel HTML error pages)
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        const data = await res.json() as { status?: string };
+        if (data.status === "ok") return true;
+        // "warming" or "sleeping" — keep polling
+      }
+    } catch { /* AbortError, network error, Vercel 504 — keep polling */ }
+    await new Promise(r => setTimeout(r, 10_000));
   }
   return false;
 }
