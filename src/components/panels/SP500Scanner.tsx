@@ -132,9 +132,12 @@ function BreadthArc({ pct, color }: { pct: number; color: string }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-interface Props { onSelectSymbol: (s: string) => void; }
+interface Props {
+  onSelectSymbol: (s: string) => void;
+  serverReady?: boolean;
+}
 
-export function SP500Scanner({ onSelectSymbol }: Props) {
+export function SP500Scanner({ onSelectSymbol, serverReady = true }: Props) {
   const [quotes,         setQuotes]         = useState<ScanRow[]>([]);
   const [loading,        setLoading]        = useState(true);
   const [universe,       setUniverse]       = useState<Universe>("both");
@@ -162,10 +165,11 @@ export function SP500Scanner({ onSelectSymbol }: Props) {
   }, [universe]);
 
   useEffect(() => {
+    if (!serverReady) return; // don't fire into a sleeping Render
     load(universe);
-    const id = setInterval(() => load(universe), 120_000); // refresh every 2 min
+    const id = setInterval(() => load(universe), 120_000);
     return () => clearInterval(id);
-  }, [load, universe]);
+  }, [load, universe, serverReady]);
 
   // Auto-load ML signals for the top 30 by volume on first load
   useEffect(() => {

@@ -14,6 +14,7 @@ const FONT_MONO = "'SF Mono', 'Fira Code', monospace";
 interface Props {
   onSelectSymbol: (sym: string) => void;
   onGoToAnalysis: (sym: string) => void;
+  serverReady?: boolean;
 }
 
 type MoverTab = "gainers" | "losers" | "all";
@@ -51,7 +52,7 @@ const SECTOR_MAP: Record<string, string> = {
 
 // ── Full-width movers table ───────────────────────────────────────────────────
 
-function MoversTable({ onSelect }: { onSelect: (sym: string) => void }) {
+function MoversTable({ onSelect, serverReady }: { onSelect: (sym: string) => void; serverReady?: boolean }) {
   const [quotes,    setQuotes]   = useState<SP500Quote[]>([]);
   const [loading,   setLoading]  = useState(true);
   const [tab,       setTab]      = useState<MoverTab>("gainers");
@@ -72,10 +73,11 @@ function MoversTable({ onSelect }: { onSelect: (sym: string) => void }) {
   }, []);
 
   useEffect(() => {
+    if (serverReady === false) return; // don't fire into a sleeping Render
     load();
     const id = setInterval(load, 30_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, serverReady]);
 
   const toggleSort = (k: SortKey) => {
     if (sortKey === k) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -462,7 +464,7 @@ function MoverHeroStrip({ onSelect }: { onSelect: (sym: string) => void }) {
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 
-export function MarketOverviewPanel({ onSelectSymbol, onGoToAnalysis }: Props) {
+export function MarketOverviewPanel({ onSelectSymbol, onGoToAnalysis, serverReady }: Props) {
   const [bookSymbol, setBookSymbol] = useState("AAPL");
 
   const handleSelect = (sym: string) => {
@@ -486,7 +488,7 @@ export function MarketOverviewPanel({ onSelectSymbol, onGoToAnalysis }: Props) {
       <MoverHeroStrip onSelect={handleSelect} />
 
       {/* Full SP500 movers table */}
-      <MoversTable onSelect={handleSelect} />
+      <MoversTable onSelect={handleSelect} serverReady={serverReady} />
 
       {/* Order book */}
       <div className="panel overflow-hidden">

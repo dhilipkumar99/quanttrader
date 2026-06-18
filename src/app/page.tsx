@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, Suspense, useState } from "react";
+import { useEffect, useCallback, Suspense, useState, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useTrader } from "@/store/trader";
 import { api, wakeRender, type CandlePoint, type ChartCandle, type ScanHorizon } from "@/lib/api";
@@ -135,20 +135,42 @@ function AppInner() {
   const [optionsHorizon, setOptionsHorizon] = useState<ScanHorizon>("day");
   const [serverReady, setServerReady] = useState(false);
 
-  // Wake Render from free-tier sleep. Cold starts take up to 5 min.
-  // Only set serverReady when we get a confirmed "ok" — never on timeout.
-  useEffect(() => {
+  // Track how long the tab has been hidden so we know if Render may have gone back to sleep
+  const hiddenAtRef = useRef<number | null>(null);
+  // Render free tier: sleeps after ~15 min idle. Use 13 min to be safe.
+  const RENDER_IDLE_MS = 13 * 60 * 1000;
+
+  const startWake = useCallback(() => {
+    setServerReady(false);
     wakeRender(300_000).then(ok => {
-      if (ok) {
-        setServerReady(true);
-      } else {
-        // 5-min timeout expired and Render never responded — unblock with warning
-        setServerReady(true);
-        toast("Server unreachable — data may be unavailable", "error");
-      }
+      setServerReady(true);
+      if (!ok) toast("Server unreachable — data may be unavailable", "error");
     });
+  }, []);
+
+  // Initial wake on mount
+  useEffect(() => {
+    startWake();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-wake when user returns to the tab after Render may have gone back to sleep
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        hiddenAtRef.current = Date.now();
+      } else {
+        const hiddenMs = hiddenAtRef.current ? Date.now() - hiddenAtRef.current : 0;
+        hiddenAtRef.current = null;
+        if (hiddenMs >= RENDER_IDLE_MS) {
+          startWake();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startWake]);
 
   useEffect(() => {
     const sym = searchParams.get("symbol");
@@ -225,14 +247,16 @@ function AppInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSymbol, activePeriod, serverReady]);
 
-  // Refresh quotes only for the user's pinned symbols
+  // Refresh quotes only for the user's pinned symbols — gated on serverReady
+  // so we don't fire into a sleeping Render when the user returns after >15 min
   useEffect(() => {
+    if (!serverReady) return;
     fetchWatchlist(pinnedSymbols);
     if (!pinnedSymbols.length) return;
     const id = setInterval(() => fetchWatchlist(pinnedSymbols), 120_000);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pinnedSymbols]);
+  }, [pinnedSymbols, serverReady]);
 
   const handleSymbol = useCallback((sym: string) => {
     setActiveSymbol(sym); setAnalysis(null); setBacktest(null);
@@ -370,13 +394,17 @@ function AppInner() {
               <MarketOverviewPanel
                 onSelectSymbol={handleSymbol}
                 onGoToAnalysis={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
+                serverReady={serverReady}
               />
             )}
             {activeTab === "trading" && (
               <TradingPanel defaultSymbol={activeSymbol} onSelectSymbol={handleSymbol} />
             )}
             {activeTab === "scanner" && (
-              <SP500Scanner onSelectSymbol={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }} />
+              <SP500Scanner
+                onSelectSymbol={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
+                serverReady={serverReady}
+              />
             )}
             {activeTab === "compare" && (
               <ComparisonPanel
