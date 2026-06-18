@@ -137,31 +137,71 @@ def _prewarm():
 
     _prewarm_done = True
     print("[prewarm] done — /health now ok", flush=True)
-    # Background: now do a live yfinance refresh so cache is fresh for next request
+
+    # Background: batch-fetch the top 50 most-searched symbols into SQLite so
+    # any subsequent /api/analyze request is a fast cache hit, not a live download.
     def _bg_refresh():
-        for sym, period in _WARM:
+        import yfinance as yf
+        import pandas as pd
+        from api.quant.ohlcv_store import _db_put, _db_get
+        _TOP50 = [
+            "AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","META","SPY","QQQ","AMD",
+            "NFLX","COIN","MSTR","PLTR","HOOD","SOFI","RIVN","LCID","NIO","UBER",
+            "LYFT","SNAP","ROKU","RBLX","U","SHOP","MELI","NET","ZS","SNOW",
+            "CRWD","DDOG","MNDY","GTLB","IOT","ARM","SMCI","MRVL","AVGO","QCOM",
+            "INTC","MU","AMAT","LRCX","KLAC","ASML","TSM","BABA","JD","PDD",
+        ]
+        period = "1y"
+        # Skip symbols already fresh in SQLite
+        to_fetch = [s for s in _TOP50 if _db_get(s, period, "1d") is None]
+        if not to_fetch:
+            print(f"[bg_refresh] all {len(_TOP50)} symbols already in SQLite", flush=True)
+            to_fetch = list(_TOP50)  # refresh anyway for fresh prices
+
+        print(f"[bg_refresh] fetching {len(to_fetch)} symbols via yfinance batch…", flush=True)
+        try:
+            raw = yf.download(
+                tickers=to_fetch, period=period, interval="1d",
+                group_by="ticker", auto_adjust=True, progress=False, threads=True,
+            )
+        except Exception as e:
+            print(f"[bg_refresh] yfinance batch failed: {e}", flush=True)
+            return
+
+        stored = 0
+        for sym in to_fetch:
             try:
-                df, data_source = fetch_with_source(sym, period=period, interval="1d")
-                if df.empty:
+                if len(to_fetch) == 1:
+                    df = raw.copy()
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                else:
+                    sym_u = sym.upper()
+                    if sym_u not in raw.columns.get_level_values(0):
+                        continue
+                    df = raw[sym_u].dropna(how="all")
+                df = df.dropna(subset=["Close"])
+                if len(df) < 20:
                     continue
+                _db_put(sym, period, "1d", df, "yfinance")
+                # Build and cache the full analyze result
                 result = _engine.analyze(df, sym)
                 quote, quote_source = fetch_quote_with_source(sym)
-                analyze_val = _build_analyze_val(result, quote, quote_source, data_source)
-                rows = []
-                for date, row in df.iterrows():
-                    date_str = str(date)[:10]
-                    rows.append({
-                        "date": date_str, "price": round(float(row["Close"]), 4),
-                        "open": round(float(row["Open"]), 4), "high": round(float(row["High"]), 4),
-                        "low": round(float(row["Low"]), 4), "volume": int(row["Volume"]), "signal": 0,
-                    })
+                analyze_val = _build_analyze_val(result, quote, quote_source, "yfinance")
+                rows = [{"date": str(d)[:10], "price": round(float(r["Close"]), 4),
+                          "open": round(float(r["Open"]), 4), "high": round(float(r["High"]), 4),
+                          "low": round(float(r["Low"]), 4), "volume": int(r["Volume"]), "signal": 0}
+                         for d, r in df.iterrows()]
                 now_ts = _time.time()
                 with _server_cache_lock:
                     _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
                     _server_cache[f"candles:{sym}:{period}"]  = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
-                print(f"[bg_refresh] {sym} ✓", flush=True)
+                stored += 1
             except Exception as e:
                 print(f"[bg_refresh] {sym} error: {e}", flush=True)
+
+        print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols cached", flush=True)
+
     _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
 
 _threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
