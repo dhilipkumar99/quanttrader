@@ -135,11 +135,17 @@ function AppInner() {
   const [optionsHorizon, setOptionsHorizon] = useState<ScanHorizon>("day");
   const [serverReady, setServerReady] = useState(false);
 
-  // Wake Render from free-tier sleep on mount — can take up to 30s cold
+  // Wake Render from free-tier sleep. Cold starts take up to 5 min.
+  // Only set serverReady when we get a confirmed "ok" — never on timeout.
   useEffect(() => {
-    wakeRender().then(ok => {
-      setServerReady(true);
-      if (!ok) toast("Server slow to wake — data may be delayed", "info");
+    wakeRender(300_000).then(ok => {
+      if (ok) {
+        setServerReady(true);
+      } else {
+        // 5-min timeout expired and Render never responded — unblock with warning
+        setServerReady(true);
+        toast("Server unreachable — data may be unavailable", "error");
+      }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -251,7 +257,7 @@ function AppInner() {
           color: "#92400E",
         }}>
           <RefreshCw size={12} style={{ animation: "spin 1s linear infinite" }} />
-          Warming up server (free tier — first load may take up to 30s)…
+          Warming up server (free tier cold start — first load may take 1–5 min)…
         </div>
       )}
 

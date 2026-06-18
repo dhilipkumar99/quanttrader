@@ -141,15 +141,17 @@ async function fetchPost<T>(path: string, body: unknown, timeoutMs = 45_000): Pr
 }
 
 // Wake Render from free-tier sleep. Polls /api/wake until status=ok or timeout.
-export async function wakeRender(timeoutMs = 55_000): Promise<boolean> {
+// Render free-tier cold starts take up to 5 minutes. Default timeout matches.
+export async function wakeRender(timeoutMs = 300_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${BASE}/api/wake`, { signal: AbortSignal.timeout(8_000) });
+      const res = await fetch(`${BASE}/api/wake`, { signal: AbortSignal.timeout(9_000) });
       const data = await res.json() as { status?: string };
       if (data.status === "ok") return true;
-    } catch { /* still waking */ }
-    await new Promise(r => setTimeout(r, 2_000));
+      // "warming" or "sleeping" — keep polling
+    } catch { /* network error or Vercel timeout — keep polling */ }
+    await new Promise(r => setTimeout(r, 10_000)); // poll every 10s
   }
   return false;
 }

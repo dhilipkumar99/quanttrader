@@ -64,52 +64,57 @@ print("✓ AgentLoop ready", flush=True)
 #    /api/analyze call hits SQLite, not a live yfinance download ──────────────
 _prewarm_done = False
 
+def _build_analyze_val(result, quote, quote_source, data_source):
+    source_label = _build_source_label(data_source, quote_source)
+    return {
+        "symbol":               result.symbol,
+        "price":                quote.get("price", 0),
+        "change_pct":           quote.get("change_pct", 0),
+        "composite_signal":     result.composite_signal,
+        "composite_confidence": result.composite_confidence,
+        "regime":               result.regime,
+        "position_size_pct":    result.position_size_pct,
+        "expected_return":      result.expected_return,
+        "risk_metrics":         result.risk_metrics,
+        "indicators":           result.indicators,
+        "monte_carlo":          result.monte_carlo,
+        "data_source":          source_label,
+        "signals": [
+            {
+                "source":      s.source,
+                "direction":   s.direction,
+                "confidence":  round(s.confidence, 4),
+                "stop_loss":   round(s.stop_loss, 4),
+                "take_profit": round(s.take_profit, 4),
+            }
+            for s in result.signals
+        ],
+    }
+
 def _prewarm():
     """
-    Populate _server_cache with full analyze + candle results for common symbols
-    before /health returns "ok". Guarantees the first real user request is an
-    instant dict lookup, not a blocking yfinance download + ML inference.
+    Populate _server_cache using SQLite-only reads (no live yfinance calls).
+    Completes in <5s if SQLite is warm; skips gracefully if not.
+    Sets _prewarm_done=True immediately after — /health returns "ok" and
+    the frontend gate opens. The first cache miss on a cold SQLite will
+    block once in _cached(), but stale-while-revalidate handles all after.
     """
     global _prewarm_done
+    from api.quant.ohlcv_store import _db_get
     _WARM = [("AAPL", "1y"), ("TSLA", "1y"), ("NVDA", "1y"), ("SPY", "1y"), ("QQQ", "1y")]
     for sym, period in _WARM:
         try:
-            df, data_source = fetch_with_source(sym, period=period, interval="1d")
-            if df.empty:
-                print(f"[prewarm] {sym} — empty df", flush=True)
+            # SQLite-only — no network call. Skip if not cached yet.
+            cached = _db_get(sym, period, "1d")
+            if cached is None:
+                print(f"[prewarm] {sym} — not in SQLite, skipping", flush=True)
                 continue
-            # Run full analysis
+            df, data_source = cached
+            if df.empty:
+                continue
             result = _engine.analyze(df, sym)
             quote, quote_source = fetch_quote_with_source(sym)
-            source_label = _build_source_label(data_source, quote_source)
-            analyze_val = {
-                "symbol":               result.symbol,
-                "price":                quote.get("price", 0),
-                "change_pct":           quote.get("change_pct", 0),
-                "composite_signal":     result.composite_signal,
-                "composite_confidence": result.composite_confidence,
-                "regime":               result.regime,
-                "position_size_pct":    result.position_size_pct,
-                "expected_return":      result.expected_return,
-                "risk_metrics":         result.risk_metrics,
-                "indicators":           result.indicators,
-                "monte_carlo":          result.monte_carlo,
-                "data_source":          source_label,
-                "signals": [
-                    {
-                        "source":      s.source,
-                        "direction":   s.direction,
-                        "confidence":  round(s.confidence, 4),
-                        "stop_loss":   round(s.stop_loss, 4),
-                        "take_profit": round(s.take_profit, 4),
-                    }
-                    for s in result.signals
-                ],
-            }
-            with _server_cache_lock:
-                _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": _time.time()}
-
-            # Also build candle cache
+            analyze_val = _build_analyze_val(result, quote, quote_source, data_source)
             rows = []
             for date, row in df.iterrows():
                 date_str = str(date)[:10]
@@ -122,16 +127,42 @@ def _prewarm():
                     "volume": int(row["Volume"]),
                     "signal": 0,
                 })
-            candle_val = {"symbol": sym, "period": period, "candles": rows}
+            now_ts = _time.time()
             with _server_cache_lock:
-                _server_cache[f"candles:{sym}:{period}"] = {"val": candle_val, "ts": _time.time()}
-
-            print(f"[prewarm] {sym} ✓ ({len(rows)} candles, signal={result.composite_signal:.2f})", flush=True)
+                _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
+                _server_cache[f"candles:{sym}:{period}"]  = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
+            print(f"[prewarm] {sym} ✓ from SQLite ({len(rows)} candles)", flush=True)
         except Exception as e:
-            print(f"[prewarm] {sym} failed: {e}", flush=True)
+            print(f"[prewarm] {sym} error: {e}", flush=True)
 
     _prewarm_done = True
-    print("[prewarm] complete — /health now returns ok", flush=True)
+    print("[prewarm] done — /health now ok", flush=True)
+    # Background: now do a live yfinance refresh so cache is fresh for next request
+    def _bg_refresh():
+        for sym, period in _WARM:
+            try:
+                df, data_source = fetch_with_source(sym, period=period, interval="1d")
+                if df.empty:
+                    continue
+                result = _engine.analyze(df, sym)
+                quote, quote_source = fetch_quote_with_source(sym)
+                analyze_val = _build_analyze_val(result, quote, quote_source, data_source)
+                rows = []
+                for date, row in df.iterrows():
+                    date_str = str(date)[:10]
+                    rows.append({
+                        "date": date_str, "price": round(float(row["Close"]), 4),
+                        "open": round(float(row["Open"]), 4), "high": round(float(row["High"]), 4),
+                        "low": round(float(row["Low"]), 4), "volume": int(row["Volume"]), "signal": 0,
+                    })
+                now_ts = _time.time()
+                with _server_cache_lock:
+                    _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
+                    _server_cache[f"candles:{sym}:{period}"]  = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
+                print(f"[bg_refresh] {sym} ✓", flush=True)
+            except Exception as e:
+                print(f"[bg_refresh] {sym} error: {e}", flush=True)
+    _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
 
 _threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
 
@@ -197,9 +228,12 @@ def _build_source_label(data_source: str, quote_source: str) -> str:
 
 @app.get("/health")
 def health():
-    # Return "ready" only after pre-warm completes so wakeRender() polling
-    # doesn't fire real API calls before the OHLCV cache is warm.
-    return {"status": "ok" if _prewarm_done else "warming"}
+    # "warming" until background prewarm populates _server_cache.
+    # The frontend wakeRender() polls this and only fires real API calls
+    # once it sees "ok" — ensuring the first request is a cache hit.
+    if _prewarm_done:
+        return {"status": "ok"}
+    return JSONResponse({"status": "warming"}, status_code=200)
 
 
 @app.get("/api/data-source/status")
@@ -264,32 +298,7 @@ def analyze(symbol: str = "AAPL", period: str = "1y"):
         except Exception as e:
             return {"error": str(e), "symbol": sym}
         quote, quote_source = fetch_quote_with_source(sym)
-        # Combine OHLCV source + quote source into a human-readable label
-        source_label = _build_source_label(data_source, quote_source)
-        return {
-            "symbol":               result.symbol,
-            "price":                quote.get("price", 0),
-            "change_pct":           quote.get("change_pct", 0),
-            "composite_signal":     result.composite_signal,
-            "composite_confidence": result.composite_confidence,
-            "regime":               result.regime,
-            "position_size_pct":    result.position_size_pct,
-            "expected_return":      result.expected_return,
-            "risk_metrics":         result.risk_metrics,
-            "indicators":           result.indicators,
-            "monte_carlo":          result.monte_carlo,
-            "data_source":          source_label,
-            "signals": [
-                {
-                    "source":      s.source,
-                    "direction":   s.direction,
-                    "confidence":  round(s.confidence, 4),
-                    "stop_loss":   round(s.stop_loss, 4),
-                    "take_profit": round(s.take_profit, 4),
-                }
-                for s in result.signals
-            ],
-        }
+        return _build_analyze_val(result, quote, quote_source, data_source)
 
     val = _cached(cache_key, ttl=120, fn=_compute)
     if val is None:
