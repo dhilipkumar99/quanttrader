@@ -66,6 +66,10 @@ _server_cache_lock = _threading.Lock()
 _recomputing: set[str] = set()
 _compute_events: dict[str, "_threading.Event"] = {}  # shared events for concurrent cache-miss waiters
 
+# Sentinel stored in _server_cache when a symbol genuinely has no data
+# (invalid ticker, delisted, etc.) so we return 404 instead of 503 "computing".
+_NO_DATA = object()
+
 # ── Pre-warm OHLCV cache for the most-requested symbols so the first
 #    /api/analyze call hits SQLite, not a live yfinance download ──────────────
 _prewarm_done = False
@@ -190,59 +194,65 @@ def _prewarm():
     _prewarm_done = True
     print("[prewarm] done — /health now ok", flush=True)
 
-    # Background: batch-fetch the extended top-50 into SQLite so any subsequent
-    # /api/analyze for these symbols is an instant cache hit.
+    # Background: batch-fetch the full trading universe into SQLite so daytrade-picks
+    # and analyze requests hit SQLite (instant) instead of live yfinance (slow).
+    # Done in chunks of 200 to stay within yfinance batch limits.
     def _bg_refresh():
         import yfinance as yf
         import pandas as pd
-        from api.quant.ohlcv_store import _db_put
-        _TOP50 = [
-            "AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","META","SPY","QQQ","AMD",
-            "NFLX","COIN","MSTR","PLTR","HOOD","SOFI","RIVN","LCID","NIO","UBER",
-            "LYFT","SNAP","ROKU","RBLX","U","SHOP","MELI","NET","ZS","SNOW",
-            "CRWD","DDOG","MNDY","GTLB","IOT","ARM","SMCI","MRVL","AVGO","QCOM",
-            "INTC","MU","AMAT","LRCX","KLAC","ASML","TSM","BABA","JD","PDD",
-        ]
+        from api.quant.ohlcv_store import _db_put, _db_get
+        from api.quant.sp500 import SP500_SYMBOLS
+        from api.quant.nasdaq import NASDAQ_SYMBOLS
+
         period = "1y"
-        # Prewarm already fetched the 5 core symbols — only fetch the rest
-        already_cached = set(_server_cache.keys())
-        to_fetch = [s for s in _TOP50 if f"analyze:{s}:{period}" not in already_cached]
-        if not to_fetch:
-            print(f"[bg_refresh] all {len(_TOP50)} already cached", flush=True)
-            return
+        # Full universe: SP500 + NASDAQ, deduped — these are what daytrade-picks scans
+        seen: set[str] = set()
+        universe: list[str] = []
+        for sym in list(SP500_SYMBOLS) + list(NASDAQ_SYMBOLS):
+            if sym not in seen:
+                seen.add(sym)
+                universe.append(sym)
 
-        print(f"[bg_refresh] fetching {len(to_fetch)} symbols…", flush=True)
-        try:
-            raw = yf.download(
-                tickers=to_fetch, period=period, interval="1d",
-                group_by="ticker", auto_adjust=True, progress=False, threads=True,
-            )
-        except Exception as e:
-            print(f"[bg_refresh] batch failed: {e}", flush=True)
-            return
+        # Skip symbols already in SQLite (prewarm already handled the core 10)
+        to_fetch = [s for s in universe if _db_get(s, period, "1d") is None]
+        print(f"[bg_refresh] fetching {len(to_fetch)}/{len(universe)} symbols in chunks…", flush=True)
 
+        CHUNK = 200  # yfinance handles up to ~200 per call comfortably
         stored = 0
-        for sym in to_fetch:
+        for i in range(0, len(to_fetch), CHUNK):
+            chunk = to_fetch[i: i + CHUNK]
             try:
-                if len(to_fetch) == 1:
-                    df = raw.copy()
-                    if isinstance(df.columns, pd.MultiIndex):
-                        df.columns = df.columns.get_level_values(0)
-                else:
-                    sym_u = sym.upper()
-                    if sym_u not in raw.columns.get_level_values(0):
-                        continue
-                    df = raw[sym_u].dropna(how="all")
-                df = df.dropna(subset=["Close"])
-                if len(df) < 20:
+                raw = yf.download(
+                    tickers=chunk, period=period, interval="1d",
+                    group_by="ticker", auto_adjust=True, progress=False, threads=True,
+                )
+                if raw.empty:
                     continue
-                _db_put(sym, period, "1d", df, "yfinance")
-                _cache_symbol(sym, period, df, "yfinance")
-                stored += 1
+                for sym in chunk:
+                    try:
+                        sym_u = sym.upper()
+                        if len(chunk) == 1:
+                            df = raw.copy()
+                            if isinstance(df.columns, pd.MultiIndex):
+                                df.columns = df.columns.get_level_values(0)
+                        else:
+                            if sym_u not in raw.columns.get_level_values(0):
+                                continue
+                            df = raw[sym_u].dropna(how="all")
+                        df = df.dropna(subset=["Close"])
+                        if len(df) < 20:
+                            continue
+                        _db_put(sym, period, "1d", df, "yfinance")
+                        stored += 1
+                    except Exception:
+                        pass
             except Exception as e:
-                print(f"[bg_refresh] {sym} error: {e}", flush=True)
+                print(f"[bg_refresh] chunk {i//CHUNK+1} failed: {e}", flush=True)
+            # Brief pause between chunks — be a good citizen to yfinance
+            if i + CHUNK < len(to_fetch):
+                _time.sleep(3)
 
-        print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols cached", flush=True)
+        print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
 
     _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
 
@@ -252,13 +262,13 @@ def _cached(key: str, ttl: float, fn):
     """
     Stale-while-revalidate cache with non-blocking miss handling.
 
-    - Fresh  (age < ttl):  return immediately.
-    - Stale  (age >= ttl): return stale immediately, kick off background refresh.
-    - Miss   (not in cache): start background compute, poll for up to 7s.
-      If compute finishes within 7s → return result.
-      If still running after 7s → return None (caller sends 503 "computing").
-      All concurrent waiters on the same key share one compute thread via
-      _compute_events so no duplicate yfinance downloads are started.
+    Returns:
+      dict/val  — real computed value (caller returns 200)
+      _NO_DATA  — fn() returned None after completing (caller returns 404)
+      None      — still computing after 7s wait (caller returns 503 "computing")
+
+    All concurrent waiters on the same missing key share one compute thread via
+    _compute_events — no duplicate yfinance downloads.
     """
     now = _time.time()
     with _server_cache_lock:
@@ -266,19 +276,24 @@ def _cached(key: str, ttl: float, fn):
 
     if entry is not None:
         age = now - entry["ts"]
+        val = entry["val"]
         if age < ttl:
-            return entry["val"]          # fresh — return immediately
+            return val   # fresh
 
-        # Stale: return stale immediately, recompute in background
+        # Stale: return stale immediately, refresh in background
+        # Don't refresh _NO_DATA entries for 5 minutes (avoid hammering yfinance on bad tickers)
+        no_data_ttl = 300
+        if val is _NO_DATA and age < no_data_ttl:
+            return _NO_DATA
         with _server_cache_lock:
             if key not in _recomputing:
                 _recomputing.add(key)
                 def _bg(k=key, f=fn):
                     try:
                         v = f()
-                        if v is not None:
-                            with _server_cache_lock:
-                                _server_cache[k] = {"val": v, "ts": _time.time()}
+                        stored = v if v is not None else _NO_DATA
+                        with _server_cache_lock:
+                            _server_cache[k] = {"val": stored, "ts": _time.time()}
                     except Exception as e:
                         print(f"[_cached] stale refresh {k} error: {e}", flush=True)
                     finally:
@@ -286,9 +301,10 @@ def _cached(key: str, ttl: float, fn):
                             _recomputing.discard(k)
                             _compute_events.pop(k, None)
                 _threading.Thread(target=_bg, daemon=True).start()
-        return entry["val"]
+        return val
 
-    # Cache miss — one thread computes, all concurrent callers wait on shared event.
+    # Cache miss — one thread computes, all concurrent callers share the event.
+    ev: "_threading.Event | None" = None
     with _server_cache_lock:
         if key not in _recomputing:
             ev = _threading.Event()
@@ -298,9 +314,9 @@ def _cached(key: str, ttl: float, fn):
             def _compute_bg(k=key, f=fn, e=ev):
                 try:
                     v = f()
-                    if v is not None:
-                        with _server_cache_lock:
-                            _server_cache[k] = {"val": v, "ts": _time.time()}
+                    stored = v if v is not None else _NO_DATA
+                    with _server_cache_lock:
+                        _server_cache[k] = {"val": stored, "ts": _time.time()}
                 except Exception as ex:
                     print(f"[_cached] miss compute {k} error: {ex}", flush=True)
                 finally:
@@ -313,15 +329,15 @@ def _cached(key: str, ttl: float, fn):
         else:
             ev = _compute_events.get(key)
 
-    # Wait for the shared event (7s budget to stay well under Vercel's 10s kill)
+    # Wait up to 7s (safely under Vercel's 10s kill timeout)
     if ev is not None:
         ev.wait(timeout=7.0)
 
     with _server_cache_lock:
         entry = _server_cache.get(key)
     if entry is not None:
-        return entry["val"]
-    return None  # still computing — caller returns 503 with Retry-After
+        return entry["val"]   # _NO_DATA or real value
+    return None  # still computing — caller returns 503
 
 
 def _build_source_label(data_source: str, quote_source: str) -> str:
@@ -416,12 +432,12 @@ def analyze(symbol: str = "AAPL", period: str = "1y"):
         return _build_analyze_val(result, quote, quote_source, data_source)
 
     val = _cached(cache_key, ttl=120, fn=_compute)
+    if val is _NO_DATA:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
     if val is None:
-        # Background compute still running — tell client to retry in 5s
         return JSONResponse(
             {"error": "computing", "symbol": sym, "retry_after": 5},
-            status_code=503,
-            headers={"Retry-After": "5"},
+            status_code=503, headers={"Retry-After": "5"},
         )
     return val
 
@@ -1157,7 +1173,9 @@ def daytrade_picks(limit: int = 20, universe: str = "sp500",
             except Exception:
                 return None
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        # 4 workers: enough parallelism without hammering yfinance rate limits
+        # when SQLite is cold (after bg_refresh finishes this becomes instant)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
             for item in ex.map(_analyse_one, to_scan):
                 if item is not None:
                     results.append(item)
@@ -1196,9 +1214,13 @@ def daytrade_picks(limit: int = 20, universe: str = "sp500",
             "generated_at":   _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
         }
 
-    val = _cached(cache_key, ttl=300, fn=_compute)
+    val = _cached(cache_key, ttl=900, fn=_compute)
     if val is None:
-        return JSONResponse({"error": "scan_failed"}, status_code=500)
+        return JSONResponse(
+            {"error": "computing", "retry_after": 5},
+            status_code=503,
+            headers={"Retry-After": "5"},
+        )
     return val
 
 
@@ -1294,11 +1316,12 @@ def candles(symbol: str = "AAPL", period: str = "1y"):
         return {"symbol": sym, "period": period, "candles": rows}
 
     val = _cached(cache_key, ttl=120, fn=_compute)
+    if val is _NO_DATA:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
     if val is None:
         return JSONResponse(
             {"error": "computing", "symbol": sym, "retry_after": 5},
-            status_code=503,
-            headers={"Retry-After": "5"},
+            status_code=503, headers={"Retry-After": "5"},
         )
     return val
 

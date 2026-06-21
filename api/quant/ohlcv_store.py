@@ -656,38 +656,17 @@ def fetch(symbol: str, period: str = "1y", interval: str = "1d") -> tuple[pd.Dat
             _hot_cache[hot_key] = (df, source, time.time())
         return df.copy(), f"sqlite_{source}"
 
-    # ── Tier 3: yfinance batch download ──
-    # Fetch sym + a window of SP500 symbols together in one HTTP call so
-    # subsequent lookups are SQLite hits — avoids per-ticker throttling.
-    batch_hit = False
-    if interval == "1d":
-        sp500 = _load_sp500()
-        # Build a batch: the requested symbol + up to 99 uncached SP500 peers
-        uncached = [s for s in sp500 if s != sym and _db_get(s, period, interval) is None]
-        batch = [sym] + uncached[:99]  # max 100 per download call
-        with _yf_batch_lock:
-            fetched = _yf_batch_download(batch, period, interval)
-
-        if fetched:
-            items = [(s, df) for s, df in fetched.items()]
-            _db_put_many(items, period, interval, "yfinance")
-            # Warm hot cache for all fetched symbols
-            with _hot_lock:
-                for s, df in fetched.items():
-                    _hot_cache[f"{s}|{period}|{interval}"] = (df, "yfinance", time.time())
-
-            if sym in fetched:
-                return fetched[sym].copy(), "yfinance"
-            batch_hit = True  # batch ran but sym wasn't in result
-
-    # Single-symbol yfinance fallback (non-daily intervals or batch missed the symbol)
-    if not batch_hit:
-        df = _yf_fetch(sym, period, interval)
-        if df is not None and not df.empty:
-            _db_put(sym, period, interval, df, "yfinance")
-            with _hot_lock:
-                _hot_cache[hot_key] = (df, "yfinance", time.time())
-            return df.copy(), "yfinance"
+    # ── Tier 3: single-symbol yfinance download ──
+    # We do NOT do a 100-symbol batch here — that belongs in the dedicated
+    # background prefetch only. Doing a batch per request causes 8 concurrent
+    # requests (daytrade-picks executor) to each wait on _yf_batch_lock while
+    # the previous 100-symbol download finishes, totalling minutes of wait.
+    df = _yf_fetch(sym, period, interval)
+    if df is not None and not df.empty:
+        _db_put(sym, period, interval, df, "yfinance")
+        with _hot_lock:
+            _hot_cache[hot_key] = (df, "yfinance", time.time())
+        return df.copy(), "yfinance"
 
     # ── Tier 3.5: Alpha Vantage (rate-limited: 20 calls/day, 1 per 15s) ──────
     if interval == "1d" and _AV_API_KEY:
