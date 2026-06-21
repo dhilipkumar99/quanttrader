@@ -42,6 +42,7 @@ from api.quant.agent import AgentLoop
 from api.quant.charts_db import (
     get_chart, get_charts_batch, get_sweep_status, run_sweep, sweep_is_stale, ensure_chart
 )
+from api.quant.ohlcv_store import _clean_yf_df, _db_put_many
 
 app = FastAPI(title="QuantTrader API")
 
@@ -73,6 +74,10 @@ _NO_DATA = object()
 # ── Pre-warm OHLCV cache for the most-requested symbols so the first
 #    /api/analyze call hits SQLite, not a live yfinance download ──────────────
 _prewarm_done = False
+# Set True after _bg_refresh stores the full universe in SQLite.
+# daytrade-picks returns 503 until this is True so it never fires
+# 80 single-symbol yfinance downloads on an empty SQLite.
+_bg_refresh_done = False
 
 def _build_analyze_val(result, quote, quote_source, data_source):
     source_label = _build_source_label(data_source, quote_source)
@@ -198,9 +203,9 @@ def _prewarm():
     # and analyze requests hit SQLite (instant) instead of live yfinance (slow).
     # Done in chunks of 200 to stay within yfinance batch limits.
     def _bg_refresh():
+        global _bg_refresh_done
         import yfinance as yf
-        import pandas as pd
-        from api.quant.ohlcv_store import _db_put, _db_get
+        from api.quant.ohlcv_store import _db_get
         from api.quant.sp500 import SP500_SYMBOLS
         from api.quant.nasdaq import NASDAQ_SYMBOLS
 
@@ -228,30 +233,34 @@ def _prewarm():
                 )
                 if raw.empty:
                     continue
+
+                items: list[tuple[str, "pd.DataFrame"]] = []
                 for sym in chunk:
                     try:
                         sym_u = sym.upper()
                         if len(chunk) == 1:
-                            df = raw.copy()
-                            if isinstance(df.columns, pd.MultiIndex):
-                                df.columns = df.columns.get_level_values(0)
+                            df_raw = raw.copy()
                         else:
                             if sym_u not in raw.columns.get_level_values(0):
                                 continue
-                            df = raw[sym_u].dropna(how="all")
-                        df = df.dropna(subset=["Close"])
-                        if len(df) < 20:
+                            df_raw = raw[sym_u].copy()
+                        df = _clean_yf_df(df_raw)
+                        if df.empty or len(df) < 20:
                             continue
-                        _db_put(sym, period, "1d", df, "yfinance")
-                        stored += 1
+                        items.append((sym_u, df))
                     except Exception:
                         pass
+
+                if items:
+                    _db_put_many(items, period, "1d", "yfinance")
+                    stored += len(items)
             except Exception as e:
                 print(f"[bg_refresh] chunk {i//CHUNK+1} failed: {e}", flush=True)
             # Brief pause between chunks — be a good citizen to yfinance
             if i + CHUNK < len(to_fetch):
                 _time.sleep(3)
 
+        _bg_refresh_done = True
         print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
 
     _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
@@ -363,8 +372,8 @@ def health():
     # The frontend wakeRender() polls this and only fires real API calls
     # once it sees "ok" — ensuring the first request is a cache hit.
     if _prewarm_done:
-        return {"status": "ok"}
-    return JSONResponse({"status": "warming"}, status_code=200)
+        return {"status": "ok", "universe_ready": _bg_refresh_done}
+    return JSONResponse({"status": "warming", "universe_ready": False}, status_code=200)
 
 
 @app.get("/api/data-source/status")
@@ -490,7 +499,13 @@ def watchlist(symbols: str = "AAPL,MSFT,NVDA,GOOGL,AMZN,META,TSLA,JPM,V,UNH,SPY,
         results.sort(key=lambda x: abs(x["confidence"]) * abs(x["signal"]), reverse=True)
         return {"watchlist": results}
 
-    return _cached(cache_key, ttl=300, fn=_compute)
+    val = _cached(cache_key, ttl=300, fn=_compute)
+    if val is None:
+        return JSONResponse(
+            {"error": "computing", "retry_after": 5},
+            status_code=503, headers={"Retry-After": "5"},
+        )
+    return val
 
 
 @app.get("/api/quote")
@@ -1070,6 +1085,15 @@ def daytrade_picks(limit: int = 20, universe: str = "sp500",
     """
     if horizon not in HORIZONS:
         return JSONResponse({"error": f"horizon must be one of {list(HORIZONS)}"}, status_code=422)
+
+    # Refuse to scan before SQLite is populated — scanning 80–150 symbols via
+    # live yfinance (single-symbol per request) would blow through the 7s window.
+    if not _bg_refresh_done:
+        return JSONResponse(
+            {"error": "computing", "retry_after": 30,
+             "message": "Universe data loading — retry in 30s"},
+            status_code=503, headers={"Retry-After": "30"},
+        )
 
     cache_key = f"daytrade_picks:{universe}:{limit}:{horizon}:{include_shorts}"
     data_period = HORIZONS[horizon]["period"]
