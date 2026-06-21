@@ -64,6 +64,7 @@ print("✓ AgentLoop ready", flush=True)
 _server_cache: dict = {}
 _server_cache_lock = _threading.Lock()
 _recomputing: set[str] = set()
+_compute_events: dict[str, "_threading.Event"] = {}  # shared events for concurrent cache-miss waiters
 
 # ── Pre-warm OHLCV cache for the most-requested symbols so the first
 #    /api/analyze call hits SQLite, not a live yfinance download ──────────────
@@ -135,7 +136,7 @@ def _prewarm():
     import pandas as pd
     from api.quant.ohlcv_store import _db_get, _db_put
 
-    _WARM = ["AAPL", "TSLA", "NVDA", "SPY", "QQQ"]
+    _WARM = ["AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "SPY", "QQQ", "META", "GOOGL", "AMD"]
     period = "1y"
     needs_fetch = []
 
@@ -248,6 +249,17 @@ def _prewarm():
 _threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
 
 def _cached(key: str, ttl: float, fn):
+    """
+    Stale-while-revalidate cache with non-blocking miss handling.
+
+    - Fresh  (age < ttl):  return immediately.
+    - Stale  (age >= ttl): return stale immediately, kick off background refresh.
+    - Miss   (not in cache): start background compute, poll for up to 7s.
+      If compute finishes within 7s → return result.
+      If still running after 7s → return None (caller sends 503 "computing").
+      All concurrent waiters on the same key share one compute thread via
+      _compute_events so no duplicate yfinance downloads are started.
+    """
     now = _time.time()
     with _server_cache_lock:
         entry = _server_cache.get(key)
@@ -255,53 +267,61 @@ def _cached(key: str, ttl: float, fn):
     if entry is not None:
         age = now - entry["ts"]
         if age < ttl:
-            return entry["val"]          # fresh — serve immediately
-        # Stale — serve stale, kick off background recompute
+            return entry["val"]          # fresh — return immediately
+
+        # Stale: return stale immediately, recompute in background
         with _server_cache_lock:
             if key not in _recomputing:
                 _recomputing.add(key)
-                def _bg(k=key, f=fn, t=ttl):
+                def _bg(k=key, f=fn):
                     try:
                         v = f()
                         if v is not None:
                             with _server_cache_lock:
                                 _server_cache[k] = {"val": v, "ts": _time.time()}
+                    except Exception as e:
+                        print(f"[_cached] stale refresh {k} error: {e}", flush=True)
                     finally:
                         with _server_cache_lock:
                             _recomputing.discard(k)
+                            _compute_events.pop(k, None)
                 _threading.Thread(target=_bg, daemon=True).start()
-        return entry["val"]              # return stale immediately
+        return entry["val"]
 
-    # Cache miss — kick off background compute and wait up to 7s for it.
-    # If yfinance takes longer, we return None so the caller sends a 503
-    # "computing" response. The background thread keeps running; on retry
-    # (client retries after ~2s) the result is cached and returns instantly.
-    result_holder: list = []
-    event = _threading.Event()
-
-    def _compute_bg():
-        try:
-            v = fn()
-            result_holder.append(v)
-            if v is not None:
-                with _server_cache_lock:
-                    _server_cache[key] = {"val": v, "ts": _time.time()}
-        except Exception as e:
-            print(f"[_cached] {key} compute error: {e}", flush=True)
-        finally:
-            with _server_cache_lock:
-                _recomputing.discard(key)
-            event.set()
-
+    # Cache miss — one thread computes, all concurrent callers wait on shared event.
     with _server_cache_lock:
         if key not in _recomputing:
+            ev = _threading.Event()
+            _compute_events[key] = ev
             _recomputing.add(key)
-            _threading.Thread(target=_compute_bg, daemon=True).start()
 
-    event.wait(timeout=7.0)
-    if result_holder:
-        return result_holder[0]
-    return None  # still computing — caller should return 503
+            def _compute_bg(k=key, f=fn, e=ev):
+                try:
+                    v = f()
+                    if v is not None:
+                        with _server_cache_lock:
+                            _server_cache[k] = {"val": v, "ts": _time.time()}
+                except Exception as ex:
+                    print(f"[_cached] miss compute {k} error: {ex}", flush=True)
+                finally:
+                    with _server_cache_lock:
+                        _recomputing.discard(k)
+                        _compute_events.pop(k, None)
+                    e.set()
+
+            _threading.Thread(target=_compute_bg, daemon=True).start()
+        else:
+            ev = _compute_events.get(key)
+
+    # Wait for the shared event (7s budget to stay well under Vercel's 10s kill)
+    if ev is not None:
+        ev.wait(timeout=7.0)
+
+    with _server_cache_lock:
+        entry = _server_cache.get(key)
+    if entry is not None:
+        return entry["val"]
+    return None  # still computing — caller returns 503 with Retry-After
 
 
 def _build_source_label(data_source: str, quote_source: str) -> str:

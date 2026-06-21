@@ -101,14 +101,14 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
   }
 }
 
-// Exponential backoff retry — only retries network errors and 5xx
+// Exponential backoff retry — retries 5xx; passes 503 "computing" through as a special signal
 async function fetchWithRetry(url: string, timeoutMs = 45_000, maxAttempts = 2): Promise<Response> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt));
     try {
       const res = await fetchWithTimeout(url, timeoutMs);
-      if (res.ok || res.status < 500) return res; // 4xx = client error, don't retry
+      if (res.ok || res.status === 503 || res.status < 500) return res; // pass 503 through as-is
       lastErr = new Error(`HTTP ${res.status}`);
     } catch (e) {
       lastErr = e;
@@ -160,8 +160,23 @@ export async function wakeRender(timeoutMs = 300_000): Promise<boolean> {
   return false;
 }
 
+// Sentinel error type for 503 "computing" — callers should show loading state and retry
+export class ComputingError extends Error {
+  readonly retryAfter: number;
+  constructor(retryAfter = 3) {
+    super("computing");
+    this.name = "ComputingError";
+    this.retryAfter = retryAfter;
+  }
+}
+
 async function get<T>(path: string, timeoutMs = 45_000): Promise<T> {
   const res = await fetchWithRetry(`${BASE}${path}`, timeoutMs);
+  if (res.status === 503) {
+    const body = await res.json().catch(() => ({}));
+    const after = Number((body as { retry_after?: number }).retry_after ?? 3);
+    throw new ComputingError(after);
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const msg = (body as { error?: string }).error ?? `HTTP ${res.status}`;

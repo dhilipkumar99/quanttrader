@@ -3,7 +3,7 @@
 import { useEffect, useCallback, Suspense, useState, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useTrader } from "@/store/trader";
-import { api, wakeRender, type CandlePoint, type ChartCandle, type ScanHorizon } from "@/lib/api";
+import { api, wakeRender, ComputingError, type CandlePoint, type ChartCandle, type ScanHorizon } from "@/lib/api";
 
 // Panels
 import { SignalPanel } from "@/components/panels/SignalPanel";
@@ -189,12 +189,11 @@ function AppInner() {
       : "QuantTrader Pro";
   }, [analysis]);
 
-  const fetchAnalysis = useCallback(async (sym: string, period: string) => {
+  const fetchAnalysis = useCallback(async (sym: string, period: string, attempt = 0) => {
     setLoading(true); setError(null);
     try {
       const data = await api.analyze(sym, period);
       setAnalysis(data);
-      // Show data-source notification
       const src = data.data_source ?? "Yahoo Finance";
       setDataSourceBadge(src);
       const isCached = src.toLowerCase().includes("cache");
@@ -204,10 +203,17 @@ function AppInner() {
         isCached ? "info" : isTD ? "info" : "success"
       );
     } catch (e: unknown) {
+      if (e instanceof ComputingError && attempt < 4) {
+        // Server is computing in background — stay in loading state and retry
+        const delay = (e.retryAfter ?? 3) * 1000;
+        setTimeout(() => fetchAnalysis(sym, period, attempt + 1), delay);
+        return; // keep loading spinner, no error toast
+      }
       const msg = e instanceof Error ? e.message : "Unknown error";
       const friendly = msg.includes("timeout") ? `${sym} timed out — try again` : `${sym}: ${msg}`;
       setError(friendly); toast(friendly, "error");
     } finally { setLoading(false); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setLoading, setError, setAnalysis]);
 
   const fetchWatchlist = useCallback(async (syms: string[]) => {
