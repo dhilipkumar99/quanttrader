@@ -60,6 +60,11 @@ print("✓ QuantEngine ready", flush=True)
 _agent = AgentLoop.instance()
 print("✓ AgentLoop ready", flush=True)
 
+# ── Stale-while-revalidate cache — declared here so prewarm thread can write to it ──
+_server_cache: dict = {}
+_server_cache_lock = _threading.Lock()
+_recomputing: set[str] = set()
+
 # ── Pre-warm OHLCV cache for the most-requested symbols so the first
 #    /api/analyze call hits SQLite, not a live yfinance download ──────────────
 _prewarm_done = False
@@ -91,59 +96,105 @@ def _build_analyze_val(result, quote, quote_source, data_source):
         ],
     }
 
+def _cache_symbol(sym: str, period: str, df, data_source: str):
+    """Build and store analyze + candles results for one symbol."""
+    result = _engine.analyze(df, sym)
+    quote, quote_source = fetch_quote_with_source(sym)
+    analyze_val = _build_analyze_val(result, quote, quote_source, data_source)
+    rows = [
+        {
+            "date":   str(date)[:10],
+            "price":  round(float(row["Close"]), 4),
+            "open":   round(float(row["Open"]), 4),
+            "high":   round(float(row["High"]), 4),
+            "low":    round(float(row["Low"]), 4),
+            "volume": int(row["Volume"]),
+            "signal": 0,
+        }
+        for date, row in df.iterrows()
+    ]
+    now_ts = _time.time()
+    with _server_cache_lock:
+        _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
+        _server_cache[f"candles:{sym}:{period}"]  = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
+    return len(rows)
+
+
 def _prewarm():
     """
-    Populate _server_cache using SQLite-only reads (no live yfinance calls).
-    Completes in <5s if SQLite is warm; skips gracefully if not.
-    Sets _prewarm_done=True immediately after — /health returns "ok" and
-    the frontend gate opens. The first cache miss on a cold SQLite will
-    block once in _cached(), but stale-while-revalidate handles all after.
+    Guarantee _server_cache is populated for the 5 core symbols before
+    setting _prewarm_done=True. Two phases:
+      1. Fast: read from SQLite (sub-second if data exists)
+      2. Fallback: yfinance batch for any symbol not in SQLite
+         (Render's SQLite is wiped on every cold start — always empty)
+    Only after both phases succeed does /health return "ok", so the
+    frontend gate never opens into an empty cache.
     """
     global _prewarm_done
-    from api.quant.ohlcv_store import _db_get
-    _WARM = [("AAPL", "1y"), ("TSLA", "1y"), ("NVDA", "1y"), ("SPY", "1y"), ("QQQ", "1y")]
-    for sym, period in _WARM:
+    import yfinance as yf
+    import pandas as pd
+    from api.quant.ohlcv_store import _db_get, _db_put
+
+    _WARM = ["AAPL", "TSLA", "NVDA", "SPY", "QQQ"]
+    period = "1y"
+    needs_fetch = []
+
+    # Phase 1 — SQLite fast path
+    for sym in _WARM:
         try:
-            # SQLite-only — no network call. Skip if not cached yet.
             cached = _db_get(sym, period, "1d")
             if cached is None:
-                print(f"[prewarm] {sym} — not in SQLite, skipping", flush=True)
+                needs_fetch.append(sym)
                 continue
             df, data_source = cached
-            if df.empty:
+            if df.empty or len(df) < 20:
+                needs_fetch.append(sym)
                 continue
-            result = _engine.analyze(df, sym)
-            quote, quote_source = fetch_quote_with_source(sym)
-            analyze_val = _build_analyze_val(result, quote, quote_source, data_source)
-            rows = []
-            for date, row in df.iterrows():
-                date_str = str(date)[:10]
-                rows.append({
-                    "date":   date_str,
-                    "price":  round(float(row["Close"]), 4),
-                    "open":   round(float(row["Open"]), 4),
-                    "high":   round(float(row["High"]), 4),
-                    "low":    round(float(row["Low"]), 4),
-                    "volume": int(row["Volume"]),
-                    "signal": 0,
-                })
-            now_ts = _time.time()
-            with _server_cache_lock:
-                _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
-                _server_cache[f"candles:{sym}:{period}"]  = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
-            print(f"[prewarm] {sym} ✓ from SQLite ({len(rows)} candles)", flush=True)
+            n = _cache_symbol(sym, period, df, data_source)
+            print(f"[prewarm] {sym} ✓ SQLite ({n} candles)", flush=True)
         except Exception as e:
-            print(f"[prewarm] {sym} error: {e}", flush=True)
+            print(f"[prewarm] {sym} SQLite error: {e}", flush=True)
+            needs_fetch.append(sym)
+
+    # Phase 2 — yfinance batch for anything SQLite didn't have
+    if needs_fetch:
+        print(f"[prewarm] SQLite cold — fetching {needs_fetch} via yfinance…", flush=True)
+        try:
+            raw = yf.download(
+                tickers=needs_fetch, period=period, interval="1d",
+                group_by="ticker", auto_adjust=True, progress=False, threads=True,
+            )
+            for sym in needs_fetch:
+                try:
+                    if len(needs_fetch) == 1:
+                        df = raw.copy()
+                        if isinstance(df.columns, pd.MultiIndex):
+                            df.columns = df.columns.get_level_values(0)
+                    else:
+                        sym_u = sym.upper()
+                        if sym_u not in raw.columns.get_level_values(0):
+                            continue
+                        df = raw[sym_u].dropna(how="all")
+                    df = df.dropna(subset=["Close"])
+                    if len(df) < 20:
+                        continue
+                    _db_put(sym, period, "1d", df, "yfinance")
+                    n = _cache_symbol(sym, period, df, "yfinance")
+                    print(f"[prewarm] {sym} ✓ yfinance ({n} candles)", flush=True)
+                except Exception as e:
+                    print(f"[prewarm] {sym} yfinance parse error: {e}", flush=True)
+        except Exception as e:
+            print(f"[prewarm] yfinance batch failed: {e}", flush=True)
 
     _prewarm_done = True
     print("[prewarm] done — /health now ok", flush=True)
 
-    # Background: batch-fetch the top 50 most-searched symbols into SQLite so
-    # any subsequent /api/analyze request is a fast cache hit, not a live download.
+    # Background: batch-fetch the extended top-50 into SQLite so any subsequent
+    # /api/analyze for these symbols is an instant cache hit.
     def _bg_refresh():
         import yfinance as yf
         import pandas as pd
-        from api.quant.ohlcv_store import _db_put, _db_get
+        from api.quant.ohlcv_store import _db_put
         _TOP50 = [
             "AAPL","TSLA","NVDA","MSFT","AMZN","GOOGL","META","SPY","QQQ","AMD",
             "NFLX","COIN","MSTR","PLTR","HOOD","SOFI","RIVN","LCID","NIO","UBER",
@@ -152,20 +203,21 @@ def _prewarm():
             "INTC","MU","AMAT","LRCX","KLAC","ASML","TSM","BABA","JD","PDD",
         ]
         period = "1y"
-        # Skip symbols already fresh in SQLite
-        to_fetch = [s for s in _TOP50 if _db_get(s, period, "1d") is None]
+        # Prewarm already fetched the 5 core symbols — only fetch the rest
+        already_cached = set(_server_cache.keys())
+        to_fetch = [s for s in _TOP50 if f"analyze:{s}:{period}" not in already_cached]
         if not to_fetch:
-            print(f"[bg_refresh] all {len(_TOP50)} symbols already in SQLite", flush=True)
-            to_fetch = list(_TOP50)  # refresh anyway for fresh prices
+            print(f"[bg_refresh] all {len(_TOP50)} already cached", flush=True)
+            return
 
-        print(f"[bg_refresh] fetching {len(to_fetch)} symbols via yfinance batch…", flush=True)
+        print(f"[bg_refresh] fetching {len(to_fetch)} symbols…", flush=True)
         try:
             raw = yf.download(
                 tickers=to_fetch, period=period, interval="1d",
                 group_by="ticker", auto_adjust=True, progress=False, threads=True,
             )
         except Exception as e:
-            print(f"[bg_refresh] yfinance batch failed: {e}", flush=True)
+            print(f"[bg_refresh] batch failed: {e}", flush=True)
             return
 
         stored = 0
@@ -184,18 +236,7 @@ def _prewarm():
                 if len(df) < 20:
                     continue
                 _db_put(sym, period, "1d", df, "yfinance")
-                # Build and cache the full analyze result
-                result = _engine.analyze(df, sym)
-                quote, quote_source = fetch_quote_with_source(sym)
-                analyze_val = _build_analyze_val(result, quote, quote_source, "yfinance")
-                rows = [{"date": str(d)[:10], "price": round(float(r["Close"]), 4),
-                          "open": round(float(r["Open"]), 4), "high": round(float(r["High"]), 4),
-                          "low": round(float(r["Low"]), 4), "volume": int(r["Volume"]), "signal": 0}
-                         for d, r in df.iterrows()]
-                now_ts = _time.time()
-                with _server_cache_lock:
-                    _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
-                    _server_cache[f"candles:{sym}:{period}"]  = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
+                _cache_symbol(sym, period, df, "yfinance")
                 stored += 1
             except Exception as e:
                 print(f"[bg_refresh] {sym} error: {e}", flush=True)
@@ -205,16 +246,6 @@ def _prewarm():
     _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
 
 _threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
-
-# ── Stale-while-revalidate cache ─────────────────────────────────────────────
-# Rules:
-#   - Fresh (age < ttl): serve immediately, no background work
-#   - Stale (age >= ttl): serve stale immediately, recompute in background
-#   - Missing: compute synchronously (only on very first cold request)
-# This guarantees Render NEVER blocks a Vercel request on a slow computation.
-_server_cache: dict = {}
-_server_cache_lock = _threading.Lock()
-_recomputing: set[str] = set()
 
 def _cached(key: str, ttl: float, fn):
     now = _time.time()
@@ -241,12 +272,36 @@ def _cached(key: str, ttl: float, fn):
                 _threading.Thread(target=_bg, daemon=True).start()
         return entry["val"]              # return stale immediately
 
-    # Cache miss — compute synchronously (only on very first cold hit)
-    val = fn()
-    if val is not None:
-        with _server_cache_lock:
-            _server_cache[key] = {"val": val, "ts": _time.time()}
-    return val
+    # Cache miss — kick off background compute and wait up to 7s for it.
+    # If yfinance takes longer, we return None so the caller sends a 503
+    # "computing" response. The background thread keeps running; on retry
+    # (client retries after ~2s) the result is cached and returns instantly.
+    result_holder: list = []
+    event = _threading.Event()
+
+    def _compute_bg():
+        try:
+            v = fn()
+            result_holder.append(v)
+            if v is not None:
+                with _server_cache_lock:
+                    _server_cache[key] = {"val": v, "ts": _time.time()}
+        except Exception as e:
+            print(f"[_cached] {key} compute error: {e}", flush=True)
+        finally:
+            with _server_cache_lock:
+                _recomputing.discard(key)
+            event.set()
+
+    with _server_cache_lock:
+        if key not in _recomputing:
+            _recomputing.add(key)
+            _threading.Thread(target=_compute_bg, daemon=True).start()
+
+    event.wait(timeout=7.0)
+    if result_holder:
+        return result_holder[0]
+    return None  # still computing — caller should return 503
 
 
 def _build_source_label(data_source: str, quote_source: str) -> str:
@@ -342,7 +397,12 @@ def analyze(symbol: str = "AAPL", period: str = "1y"):
 
     val = _cached(cache_key, ttl=120, fn=_compute)
     if val is None:
-        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+        # Background compute still running — tell client to retry in 5s
+        return JSONResponse(
+            {"error": "computing", "symbol": sym, "retry_after": 5},
+            status_code=503,
+            headers={"Retry-After": "5"},
+        )
     return val
 
 
@@ -1215,7 +1275,11 @@ def candles(symbol: str = "AAPL", period: str = "1y"):
 
     val = _cached(cache_key, ttl=120, fn=_compute)
     if val is None:
-        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+        return JSONResponse(
+            {"error": "computing", "symbol": sym, "retry_after": 5},
+            status_code=503,
+            headers={"Retry-After": "5"},
+        )
     return val
 
 
