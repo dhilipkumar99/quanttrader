@@ -7,47 +7,35 @@ export async function GET(req: NextRequest) {
   const period = req.nextUrl.searchParams.get("period") ?? "1y";
   const url = `${PYTHON_BASE}/api/analyze?symbol=${encodeURIComponent(symbol)}&period=${period}`;
 
-  // Poll Render up to 3 times within the ~9s Vercel budget.
-  // 503 = background compute running; wait 2s and retry.
-  // This covers the cache-miss case where yfinance finishes in 3-8s.
-  const delays = [0, 2000, 2000]; // attempt 0: immediate, 1: +2s, 2: +2s = 4s max wait
-  let lastRes: Response | null = null;
-
-  for (const delay of delays) {
-    if (delay > 0) await new Promise(r => setTimeout(r, delay));
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(4_500) });
-      if (res.status !== 503) {
-        // Got a real answer (200, 404, etc.) — return it
-        const data = await res.json();
-        return NextResponse.json(data, {
-          status: res.status,
-          headers: res.ok
-            ? { "Cache-Control": "s-maxage=300, stale-while-revalidate=3600" }
-            : { "Cache-Control": "no-store" },
-        });
-      }
-      lastRes = res;
-    } catch (e: unknown) {
-      const err = e as Error;
-      if (err?.name === "TimeoutError") continue; // timed out waiting — try again
+  // Single request with 8.5s timeout — fits inside Vercel's 10s hard kill with margin.
+  // Python _cached() waits up to 7s internally; if it returns 200/404 within that window,
+  // we get the answer. If it returns 503 (still computing) or we time out, we pass 503
+  // back to the client — ComputingError in api.ts retries after retryAfter seconds.
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_500) });
+    const data = await res.json();
+    if (res.ok) {
+      return NextResponse.json(data, {
+        status: 200,
+        headers: { "Cache-Control": "s-maxage=300, stale-while-revalidate=3600" },
+      });
+    }
+    // 503 computing or 404 no_data — pass through with correct headers
+    return NextResponse.json(data, {
+      status: res.status,
+      headers: { "Cache-Control": "no-store", ...(res.status === 503 ? { "Retry-After": "5" } : {}) },
+    });
+  } catch (e: unknown) {
+    const err = e as Error;
+    if (err?.name === "TimeoutError") {
       return NextResponse.json(
-        { error: String(err) },
-        { status: 500, headers: { "Cache-Control": "no-store" } }
+        { error: "computing", retry_after: 5 },
+        { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "5" } }
       );
     }
+    return NextResponse.json(
+      { error: String(err) },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
+    );
   }
-
-  // All retries exhausted — still computing; pass 503 through so client can retry
-  if (lastRes) {
-    const data = await lastRes.json().catch(() => ({ error: "computing" }));
-    return NextResponse.json(data, {
-      status: 503,
-      headers: { "Cache-Control": "no-store", "Retry-After": "3" },
-    });
-  }
-  return NextResponse.json(
-    { error: "timeout" },
-    { status: 500, headers: { "Cache-Control": "no-store" } }
-  );
 }
