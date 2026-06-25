@@ -9,7 +9,7 @@ import {
 import { AlertsPanel } from "@/components/panels/AlertsPanel";
 import { api } from "@/lib/api";
 
-const POLL_MS = 15_000;
+const POLL_MS = 60_000;
 
 export function AlertBell() {
   const [open, setOpen] = useState(false);

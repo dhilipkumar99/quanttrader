@@ -177,19 +177,18 @@ def _prewarm():
                 tickers=needs_fetch, period=period, interval="1d",
                 group_by="ticker", auto_adjust=True, progress=False, threads=True,
             )
+            # yfinance ≥0.2.50 always returns (Ticker, Field) MultiIndex
+            avail = set(raw.columns.get_level_values(0)) if isinstance(raw.columns, pd.MultiIndex) else set()
             for sym in needs_fetch:
                 try:
-                    if len(needs_fetch) == 1:
-                        df = raw.copy()
-                        if isinstance(df.columns, pd.MultiIndex):
-                            df.columns = df.columns.get_level_values(0)
-                    else:
-                        sym_u = sym.upper()
-                        if sym_u not in raw.columns.get_level_values(0):
+                    sym_u = sym.upper()
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        if sym_u not in avail:
                             continue
-                        df = raw[sym_u].dropna(how="all")
-                    df = df.dropna(subset=["Close"])
-                    if len(df) < 20:
+                        df = _clean_yf_df(raw[sym_u].copy())
+                    else:
+                        df = _clean_yf_df(raw.copy())
+                    if df.empty or len(df) < 20:
                         continue
                     _db_put(sym, period, "1d", df, "yfinance")
                     n = _cache_symbol(sym, period, df, "yfinance")
@@ -225,7 +224,7 @@ def _prewarm():
         to_fetch = [s for s in universe if _db_get(s, period, "1d") is None]
         print(f"[bg_refresh] fetching {len(to_fetch)}/{len(universe)} symbols in chunks…", flush=True)
 
-        CHUNK = 200  # yfinance handles up to ~200 per call comfortably
+        CHUNK = 100  # 100 per call — 200-symbol batches trip yfinance rate limits
         stored = 0
         for i in range(0, len(to_fetch), CHUNK):
             chunk = to_fetch[i: i + CHUNK]
@@ -238,30 +237,33 @@ def _prewarm():
                     continue
 
                 items: list[tuple[str, "pd.DataFrame"]] = []
-                for sym in chunk:
-                    try:
+                # yfinance ≥0.2.50 always returns (Ticker, Field) MultiIndex
+                if isinstance(raw.columns, pd.MultiIndex):
+                    available = set(raw.columns.get_level_values(0))
+                    for sym in chunk:
                         sym_u = sym.upper()
-                        if len(chunk) == 1:
-                            df_raw = raw.copy()
-                        else:
-                            if sym_u not in raw.columns.get_level_values(0):
-                                continue
-                            df_raw = raw[sym_u].copy()
-                        df = _clean_yf_df(df_raw)
-                        if df.empty or len(df) < 20:
+                        if sym_u not in available:
                             continue
+                        try:
+                            df = _clean_yf_df(raw[sym_u].copy())
+                            if not df.empty and len(df) >= 20:
+                                items.append((sym_u, df))
+                        except Exception:
+                            pass
+                else:
+                    sym_u = chunk[0].upper()
+                    df = _clean_yf_df(raw.copy())
+                    if not df.empty and len(df) >= 20:
                         items.append((sym_u, df))
-                    except Exception:
-                        pass
 
                 if items:
                     _db_put_many(items, period, "1d", "yfinance")
                     stored += len(items)
             except Exception as e:
                 print(f"[bg_refresh] chunk {i//CHUNK+1} failed: {e}", flush=True)
-            # Brief pause between chunks — be a good citizen to yfinance
+            # Longer pause between chunks — yfinance throttles hard on rapid batch calls
             if i + CHUNK < len(to_fetch):
-                _time.sleep(3)
+                _time.sleep(10)
 
         _bg_refresh_done = True
         print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
@@ -530,9 +532,22 @@ def watchlist(symbols: str = "AAPL,MSFT,NVDA,GOOGL,AMZN,META,TSLA,JPM,V,UNH,SPY,
     return val
 
 
+_quote_cache: dict[str, tuple[dict, float]] = {}
+_quote_cache_lock = _threading.Lock()
+_QUOTE_CACHE_TTL = 60  # serve the same quote for up to 60s before re-fetching
+
 @app.get("/api/quote")
 def quote(symbol: str = "AAPL"):
-    return fetch_quote(symbol.upper())
+    sym = symbol.upper()
+    now = _time.time()
+    with _quote_cache_lock:
+        entry = _quote_cache.get(sym)
+        if entry and (now - entry[1]) < _QUOTE_CACHE_TTL:
+            return entry[0]
+    result = fetch_quote(sym)
+    with _quote_cache_lock:
+        _quote_cache[sym] = (result, _time.time())
+    return result
 
 
 @app.get("/api/broker/account")
