@@ -242,10 +242,12 @@ def _db_put_many(items: list[tuple[str, pd.DataFrame]], period: str, interval: s
 def _td_fetch_one(symbol: str, outputsize: int) -> Optional[pd.DataFrame]:
     """Fetch daily OHLCV for one symbol from TwelveData."""
     try:
+        # TwelveData uses slash notation for class-B shares (BRK/B, BF/B)
+        td_symbol = symbol.replace("-", "/")
         resp = requests.get(
             f"{_TD_BASE}/time_series",
             params={
-                "symbol":     symbol,
+                "symbol":     td_symbol,
                 "interval":   "1day",
                 "outputsize": min(outputsize, 5000),
                 "apikey":     _TD_API_KEY,
@@ -334,17 +336,36 @@ _yf_prefetch_done = False           # set True after first startup sweep
 
 
 def _clean_yf_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalise a single-symbol yfinance DataFrame to OHLCV with Date index."""
+    """
+    Normalise a yfinance DataFrame slice to OHLCV with Date index.
+
+    yfinance ≥0.2.50 changed the column MultiIndex from (Field, Ticker) to
+    (Ticker, Field) for BOTH single and multi-symbol downloads when
+    group_by='ticker' is set.  After slicing raw[ticker] the result has flat
+    columns ['Open','High',...] — but we also accept whatever we receive.
+    """
     df = df.copy()
-    # yf.download multi-symbol returns MultiIndex columns (field, symbol);
-    # single-symbol returns flat columns — handle both
+    # Flatten any remaining MultiIndex (shouldn't happen after per-symbol slice,
+    # but guard against future yfinance changes)
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df.rename(columns={"Adj Close": "Close"}) if "Adj Close" in df.columns and "Close" not in df.columns else df
+        # Try (Ticker, Field) — take level 1
+        level1 = df.columns.get_level_values(1).tolist()
+        if "Close" in level1:
+            df.columns = level1
+        else:
+            # Fall back to level 0
+            df.columns = df.columns.get_level_values(0)
+
+    # Prefer adjusted close
+    if "Adj Close" in df.columns and "Close" not in df.columns:
+        df = df.rename(columns={"Adj Close": "Close"})
+
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         if col not in df.columns:
             return pd.DataFrame()
+
     df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+    df = df.apply(pd.to_numeric, errors="coerce")
     df = df[df["Close"] > 0]
     df = df[df["Volume"] >= 0]
     df = df.ffill(limit=3).dropna(subset=["Close", "Volume"])
@@ -356,7 +377,10 @@ def _yf_batch_download(symbols: list[str], period: str, interval: str) -> dict[s
     """
     Download multiple symbols in a single yf.download() call.
     Returns {symbol: df} for successfully fetched symbols.
-    yf.download batches all tickers into one HTTP request — avoids per-ticker throttling.
+
+    yfinance ≥0.2.50: group_by='ticker' always returns MultiIndex (Ticker, Field)
+    regardless of whether 1 or N tickers are requested.  We handle this by
+    always treating the result as a per-ticker MultiIndex and slicing by ticker.
     """
     if not symbols:
         return {}
@@ -376,24 +400,25 @@ def _yf_batch_download(symbols: list[str], period: str, interval: str) -> dict[s
 
         result: dict[str, pd.DataFrame] = {}
 
-        if len(symbols) == 1:
-            # Single symbol: flat columns
-            df = _clean_yf_df(raw)
-            if not df.empty:
-                result[symbols[0].upper()] = df
-        else:
-            # Multi symbol: top-level columns are symbols
+        # New yfinance always returns (Ticker, Field) MultiIndex with group_by='ticker'
+        if isinstance(raw.columns, pd.MultiIndex):
+            available = set(raw.columns.get_level_values(0))
             for sym in symbols:
+                sym_u = sym.upper()
+                if sym_u not in available:
+                    continue
                 try:
-                    sym_u = sym.upper()
-                    if sym_u not in raw.columns.get_level_values(0):
-                        continue
-                    df = raw[sym_u].copy()
+                    df = raw[sym_u].copy()   # produces flat (Field,) columns
                     df = _clean_yf_df(df)
                     if not df.empty:
                         result[sym_u] = df
                 except Exception as e:
-                    log.debug("yf batch parse %s: %s", sym, e)
+                    log.debug("yf batch parse %s: %s", sym_u, e)
+        else:
+            # Flat columns — single ticker, old yfinance behaviour (shouldn't happen)
+            df = _clean_yf_df(raw)
+            if not df.empty:
+                result[symbols[0].upper()] = df
 
         return result
     except Exception as e:
@@ -505,8 +530,9 @@ def _av_fetch(symbol: str, period: str) -> Optional[pd.DataFrame]:
     log.info("Alpha Vantage fetch %s (call %d/%d today)", symbol, call_num, _AV_DAY_LIMIT)
 
     try:
-        # compact = last 100 bars (free); full = 20+ years (also free for TIME_SERIES_DAILY)
-        outputsize = "compact" if _period_to_outputsize(period) <= 100 else "full"
+        # AV free tier only supports outputsize=compact (last 100 bars).
+        # full requires a premium plan — always use compact to stay on free tier.
+        outputsize = "compact"
         resp = requests.get(
             _AV_BASE,
             params={

@@ -37,11 +37,43 @@ export function LeaderboardPanel({ onSelectSymbol }: Props) {
   const [error, setError]     = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-    api.leaderboard(horizon)
-      .then(d => { setData(d); setLoading(false); })
-      .catch(e => { setError(String(e)); setLoading(false); });
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const load = async (attempt = 0) => {
+      if (cancelled) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const d = await api.leaderboard(horizon);
+        if (!cancelled) { setData(d); setLoading(false); }
+      } catch (e: unknown) {
+        if (cancelled) return;
+        const msg = String(e);
+        // 503 = still computing during server warm-up — retry up to 4 times
+        if (msg.includes("503") || msg.includes("computing")) {
+          if (attempt < 4) {
+            const delay = (attempt + 1) * 15_000; // 15s, 30s, 45s, 60s
+            retryTimer = setTimeout(() => load(attempt + 1), delay);
+            // Show a gentle "warming up" message instead of an error
+            setError(`warming_up:${attempt}`);
+            setLoading(false);
+          } else {
+            setError("Server is still warming up. Refresh in a minute.");
+            setLoading(false);
+          }
+        } else {
+          setError(msg);
+          setLoading(false);
+        }
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [horizon]);
 
   return (
@@ -78,9 +110,15 @@ export function LeaderboardPanel({ onSelectSymbol }: Props) {
           </div>
         )}
 
-        {error && (
+        {error && !error.startsWith("warming_up") && (
           <div style={{ padding: "16px", color: "var(--red)", fontFamily: FONT_BODY, fontSize: "12px" }}>
             {error}
+          </div>
+        )}
+
+        {error?.startsWith("warming_up") && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", padding: "40px 0", color: "var(--text-muted)", fontFamily: FONT_BODY, fontSize: "13px" }}>
+            <RefreshCw size={14} className="animate-spin" /> Server warming up — retrying shortly…
           </div>
         )}
 
