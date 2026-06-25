@@ -175,7 +175,8 @@ def _prewarm():
         try:
             raw = yf.download(
                 tickers=needs_fetch, period=period, interval="1d",
-                group_by="ticker", auto_adjust=True, progress=False, threads=True,
+                group_by="ticker", auto_adjust=True, progress=False,
+                threads=False,  # avoid RuntimeError from concurrent yfinance downloads
             )
             # yfinance ≥0.2.50 always returns (Ticker, Field) MultiIndex
             avail = set(raw.columns.get_level_values(0)) if isinstance(raw.columns, pd.MultiIndex) else set()
@@ -211,62 +212,69 @@ def _prewarm():
         from api.quant.sp500 import SP500_SYMBOLS
         from api.quant.nasdaq import NASDAQ_SYMBOLS
 
-        period = "1y"
-        # Full universe: SP500 + NASDAQ, deduped — these are what daytrade-picks scans
-        seen: set[str] = set()
-        universe: list[str] = []
-        for sym in list(SP500_SYMBOLS) + list(NASDAQ_SYMBOLS):
-            if sym not in seen:
-                seen.add(sym)
-                universe.append(sym)
+        try:
+            period = "1y"
+            # Full universe: SP500 + NASDAQ, deduped
+            seen: set[str] = set()
+            universe: list[str] = []
+            for sym in list(SP500_SYMBOLS) + list(NASDAQ_SYMBOLS):
+                if sym not in seen:
+                    seen.add(sym)
+                    universe.append(sym)
 
-        # Skip symbols already in SQLite (prewarm already handled the core 10)
-        to_fetch = [s for s in universe if _db_get(s, period, "1d") is None]
-        print(f"[bg_refresh] fetching {len(to_fetch)}/{len(universe)} symbols in chunks…", flush=True)
+            # Skip symbols already fresh in SQLite
+            to_fetch = [s for s in universe if _db_get(s, period, "1d") is None]
+            print(f"[bg_refresh] fetching {len(to_fetch)}/{len(universe)} symbols in chunks…", flush=True)
 
-        CHUNK = 100  # 100 per call — 200-symbol batches trip yfinance rate limits
-        stored = 0
-        for i in range(0, len(to_fetch), CHUNK):
-            chunk = to_fetch[i: i + CHUNK]
-            try:
-                raw = yf.download(
-                    tickers=chunk, period=period, interval="1d",
-                    group_by="ticker", auto_adjust=True, progress=False, threads=True,
-                )
-                if raw.empty:
-                    continue
+            CHUNK = 50  # smaller chunks — reduces concurrent thread collision risk
+            stored = 0
+            for i in range(0, len(to_fetch), CHUNK):
+                chunk = to_fetch[i: i + CHUNK]
+                try:
+                    raw = yf.download(
+                        tickers=chunk, period=period, interval="1d",
+                        group_by="ticker", auto_adjust=True, progress=False,
+                        threads=False,  # no internal threading — avoids RuntimeError on Render
+                    )
+                    if raw.empty:
+                        continue
 
-                items: list[tuple[str, "pd.DataFrame"]] = []
-                # yfinance ≥0.2.50 always returns (Ticker, Field) MultiIndex
-                if isinstance(raw.columns, pd.MultiIndex):
-                    available = set(raw.columns.get_level_values(0))
-                    for sym in chunk:
-                        sym_u = sym.upper()
-                        if sym_u not in available:
-                            continue
-                        try:
-                            df = _clean_yf_df(raw[sym_u].copy())
-                            if not df.empty and len(df) >= 20:
-                                items.append((sym_u, df))
-                        except Exception:
-                            pass
-                else:
-                    sym_u = chunk[0].upper()
-                    df = _clean_yf_df(raw.copy())
-                    if not df.empty and len(df) >= 20:
-                        items.append((sym_u, df))
+                    items: list[tuple[str, "pd.DataFrame"]] = []
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        available = set(raw.columns.get_level_values(0))
+                        for sym in chunk:
+                            sym_u = sym.upper()
+                            if sym_u not in available:
+                                continue
+                            try:
+                                df = _clean_yf_df(raw[sym_u].copy())
+                                if not df.empty and len(df) >= 20:
+                                    items.append((sym_u, df))
+                            except Exception:
+                                pass
+                    else:
+                        sym_u = chunk[0].upper()
+                        df = _clean_yf_df(raw.copy())
+                        if not df.empty and len(df) >= 20:
+                            items.append((sym_u, df))
 
-                if items:
-                    _db_put_many(items, period, "1d", "yfinance")
-                    stored += len(items)
-            except Exception as e:
-                print(f"[bg_refresh] chunk {i//CHUNK+1} failed: {e}", flush=True)
-            # Longer pause between chunks — yfinance throttles hard on rapid batch calls
-            if i + CHUNK < len(to_fetch):
-                _time.sleep(10)
+                    if items:
+                        _db_put_many(items, period, "1d", "yfinance")
+                        stored += len(items)
+                except Exception as e:
+                    print(f"[bg_refresh] chunk {i//CHUNK+1} error: {type(e).__name__}: {e}", flush=True)
 
-        _bg_refresh_done = True
-        print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
+                # Pause between chunks to stay under yfinance rate limits
+                if i + CHUNK < len(to_fetch):
+                    _time.sleep(5)
+
+            print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
+        except Exception as e:
+            print(f"[bg_refresh] fatal error: {e}", flush=True)
+        finally:
+            # Always open daytrade-picks gate — even partial data is better than blocking forever
+            _bg_refresh_done = True
+            print("[bg_refresh] gate opened", flush=True)
 
     _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
 
