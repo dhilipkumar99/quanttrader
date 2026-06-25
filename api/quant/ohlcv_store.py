@@ -240,7 +240,7 @@ def _db_put_many(items: list[tuple[str, pd.DataFrame]], period: str, interval: s
 # ── TwelveData batch OHLCV fetch ─────────────────────────────────────────────
 
 def _td_fetch_one(symbol: str, outputsize: int) -> Optional[pd.DataFrame]:
-    """Fetch daily OHLCV for one symbol from TwelveData."""
+    """Fetch daily OHLCV for one symbol from TwelveData (1 credit per call)."""
     try:
         # TwelveData uses slash notation for class-B shares (BRK/B, BF/B)
         td_symbol = symbol.replace("-", "/")
@@ -704,42 +704,30 @@ def fetch(symbol: str, period: str = "1y", interval: str = "1d") -> tuple[pd.Dat
             log.info("AlphaVantage hit for %s", sym)
             return df.copy(), "alphavantage"
 
-    # ── Tier 4: TwelveData bulk fetch (guarded by cooldown) ──
-    if interval != "1d" or not _TD_API_KEY:
-        return pd.DataFrame(), "none"
-
-    cooldown = _td_cooldown_remaining()
-    if cooldown > 0:
-        log.info("TwelveData cooldown active (%.0fs remaining) — no data for %s", cooldown, sym)
-        return pd.DataFrame(), "none"
-
-    # Acquire lock so only ONE bulk sweep runs at a time
-    acquired = _td_fetch_lock.acquire(blocking=False)
-    if not acquired:
-        log.info("TwelveData sweep already running — waiting for %s", sym)
-        _td_fetch_lock.acquire(blocking=True)
-        _td_fetch_lock.release()
-        cached = _db_get(sym, period, interval)
-        if cached:
-            df, source = cached
-            with _hot_lock:
-                _hot_cache[hot_key] = (df, source, time.time())
-            return df.copy(), f"sqlite_{source}"
-        return pd.DataFrame(), "none"
-
-    try:
-        log.info("TwelveData bulk sweep starting for period=%s", period)
-        n = _td_bulk_fetch_all_sp500(period)
-        log.info("TwelveData bulk sweep done: %d symbols stored", n)
-    finally:
-        _td_fetch_lock.release()
-
-    cached = _db_get(sym, period, interval)
-    if cached:
-        df, source = cached
-        with _hot_lock:
-            _hot_cache[hot_key] = (df, source, time.time())
-        return df.copy(), f"sqlite_{source}"
+    # ── Tier 4: TwelveData single-symbol fallback ──
+    # NEVER do bulk SP500 sweeps here — that blows through 800 credits instantly.
+    # Only fetch the one requested symbol (1 credit), and only if the daily
+    # budget has not been exhausted (we cap at 200 single-symbol calls/day).
+    if interval == "1d" and _TD_API_KEY:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        with _db_lock:
+            conn = _get_conn()
+            row = conn.execute("SELECT calls_today, call_date FROM td_state WHERE id=1").fetchone()
+            conn.close()
+        calls_today = (row["calls_today"] if row and row["call_date"] == today else 0) if row else 0
+        _TD_SINGLE_DAY_CAP = 200  # well under 800 credit limit
+        if calls_today < _TD_SINGLE_DAY_CAP:
+            outputsize = _period_to_outputsize(period)
+            df = _td_fetch_one(sym, outputsize)
+            if df is not None and not df.empty:
+                _td_record_call(1)
+                _db_put(sym, period, interval, df, "twelvedata")
+                with _hot_lock:
+                    _hot_cache[hot_key] = (df, "twelvedata", time.time())
+                log.info("TwelveData single-symbol hit for %s (%d credits used today)", sym, calls_today + 1)
+                return df.copy(), "twelvedata"
+        else:
+            log.info("TwelveData daily cap reached (%d/%d) — skipping %s", calls_today, _TD_SINGLE_DAY_CAP, sym)
 
     return pd.DataFrame(), "none"
 
@@ -753,27 +741,20 @@ def td_bulk_sweep_now(period: str = "1y", force: bool = False) -> dict:
     if not _TD_API_KEY:
         return {"ok": False, "error": "No TwelveData API key configured"}
 
-    cooldown = _td_cooldown_remaining()
-    if cooldown > 0 and not force:
-        return {"ok": False, "cooldown_remaining": round(cooldown), "error": "Cooldown active"}
-
-    acquired = _td_fetch_lock.acquire(blocking=False)
-    if not acquired:
-        return {"ok": False, "error": "Sweep already running"}
-
-    try:
-        log.info("TD bulk sweep (force=%s) starting for period=%s", force, period)
-        n = _td_bulk_fetch_all_sp500(period)
-        log.info("TD bulk sweep done: %d symbols stored", n)
-        return {"ok": True, "symbols_stored": n, "period": period}
-    finally:
-        _td_fetch_lock.release()
+    # Hard block: bulk SP500 sweep burns ~800 credits in one run — our entire daily budget.
+    # This endpoint is disabled to protect the free-tier limit.
+    # Use the per-symbol Tier 4 fallback in fetch() instead (capped at 200 credits/day).
+    return {
+        "ok": False,
+        "error": "Bulk TD sweep disabled — would exhaust 800-credit daily limit. "
+                 "Per-symbol fallback in fetch() is active (cap: 200 credits/day)."
+    }
 
 
 def fetch_quote_with_source(symbol: str) -> tuple[dict, str]:
     """
     Live quote. yfinance primary, OHLCV SQLite cache fallback.
-    TwelveData is NEVER called here — it is reserved exclusively for bulk OHLCV sweeps.
+    TwelveData is NEVER called here — quotes use yfinance fast_info or SQLite cache only.
     Returns (quote_dict, source).
     """
     sym = symbol.upper()

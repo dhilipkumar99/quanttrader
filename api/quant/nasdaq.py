@@ -94,7 +94,7 @@ _RAW_NASDAQ: list[str] = [
     # ── Biotech / genomics (not in S&P 500) ────────────────────────────────
     "ALNY",  # Alnylam Pharmaceuticals
     "BMRN",  # BioMarin Pharmaceutical
-    "EXAS",  # Exact Sciences
+    # "EXAS",  # Exact Sciences — delisted/no data, removed to avoid batch failures
     "NVAX",  # Novavax
     "BNTX",  # BioNTech
     "SRPT",  # Sarepta Therapeutics
@@ -108,7 +108,7 @@ _RAW_NASDAQ: list[str] = [
     "INVA",  # Innoviva
 
     # ── Fintech / payments (non-S&P) ───────────────────────────────────────
-    "SQ",    # Block Inc (fintech, NASDAQ)
+    # "SQ",    # Block Inc — YFRateLimitError/delisted, removed to avoid batch failures
     "DLO",   # dLocal Limited
     "RELY",  # Remitly Global
 
@@ -117,7 +117,7 @@ _RAW_NASDAQ: list[str] = [
     "SITM",  # SiTime Corporation
     "GFS",   # GlobalFoundries
     "ON",    # ON Semiconductor (may be in S&P — filtered at runtime)
-    "ANSS",  # ANSYS (acquired by Synopsys — check; include for now)
+    # "ANSS",  # ANSYS — acquired/delisted, removed to avoid batch failures
 
     # ── Enterprise software (mid-cap, not yet S&P) ─────────────────────────
     "FIVN",  # Five9
