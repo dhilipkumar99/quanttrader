@@ -62,6 +62,9 @@ class QuantResult:
     monte_carlo: dict
     horizon: str = "day"    # which horizon this result is scored for
     horizon_score: float = 0.0  # horizon-specific composite score (for ranking)
+    beginner_summary: str = ""  # one plain-English sentence for beginner mode
+    oos_sharpe: float = 0.0     # out-of-sample Sharpe from hold-out fold
+    feature_importance: list = field(default_factory=list)  # top-3 [(feature, importance), …]
 
 
 # ─── Feature Engineering (QuantBasics §5: normalisation, §10: feature selection)
@@ -357,6 +360,8 @@ class MLSignal:
             "hl_range_adv", "hurst", "autocorr_1"
         ]
         self._min_train = 60
+        self.oos_sharpe: float = 0.0
+        self.top_features: list = []  # [(name, importance), …] top-3
 
     def fit(self, features: pd.DataFrame):
         available = [c for c in self.feature_cols if c in features.columns]
@@ -366,18 +371,31 @@ class MLSignal:
         if len(X) < self._min_train or len(np.unique(y)) < 2:
             return
 
-        # Walk-forward cross-validation (QuantBasics §7 hypothesis testing)
+        # Walk-forward split: last 20% is the hold-out (OOS) fold
         tscv = TimeSeriesSplit(n_splits=3, test_size=max(10, len(X) // 5))
         best_split = list(tscv.split(X))[-1]
-        train_idx, _ = best_split
+        train_idx, test_idx = best_split
 
-        X_train = X[train_idx]
-        y_train = y[train_idx]
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
 
         X_scaled = self.scaler.fit_transform(X_train)
         self.model.fit(X_scaled, y_train)
         self.trained = True
         self._available_cols = available
+
+        # OOS Sharpe: treat each correct-direction prediction as +1, wrong as -1
+        if len(X_test) >= 5:
+            X_test_sc = self.scaler.transform(X_test)
+            preds = self.model.predict(X_test_sc)
+            oos_returns = np.where(preds == y_test, 0.01, -0.01)  # synthetic ±1% per bar
+            std = oos_returns.std()
+            self.oos_sharpe = float(oos_returns.mean() / std * np.sqrt(252)) if std > 0 else 0.0
+
+        # Top-3 feature importances
+        imp = self.model.feature_importances_
+        pairs = sorted(zip(available, imp.tolist()), key=lambda x: -x[1])
+        self.top_features = [(name, round(float(v), 4)) for name, v in pairs[:3]]
 
     def generate(self, features: pd.DataFrame, price: float) -> Optional[Signal]:
         if not self.trained or len(features) < 2:
@@ -535,6 +553,70 @@ class PerformanceMetrics:
         return weighted_slip / total_nv
 
 
+# ─── Beginner summary builder
+
+def _build_beginner_summary(
+    symbol: str, signal: int, confidence: float, regime: str,
+    indicators: dict, risk: dict, mc: dict, kelly_f: float, horizon: str,
+) -> str:
+    conf_pct = int(round(confidence * 100))
+    rsi = indicators.get("rsi_14", 50)
+    mom = indicators.get("mom_12_1", 0)
+    mc_prob = mc.get("prob_positive", 50) if mc else 50
+    kelly_pct = round(kelly_f * 100, 1)
+
+    horizon_labels = {
+        "day": "today", "swing": "over the next 1–4 weeks",
+        "month": "over the next month", "quarter": "over the next 3 months",
+        "year": "over the next 6–12 months",
+    }
+    when = horizon_labels.get(horizon, "over the holding period")
+
+    r = regime.lower()
+    if "trending_up" in r:
+        regime_note = "It's in a clear uptrend"
+    elif "trending_down" in r:
+        regime_note = "It's in a downtrend — caution for buyers"
+    elif "volatile" in r:
+        regime_note = "It's been volatile lately"
+    elif "mean_rev" in r:
+        regime_note = "It's bouncing between highs and lows"
+    else:
+        regime_note = "The market is quiet right now"
+
+    if signal == 1:
+        if mom > 10:
+            trend_note = f"strong recent momentum (+{mom:.0f}% over the past year)"
+        elif rsi < 40:
+            trend_note = f"an oversold RSI of {rsi:.0f} suggesting a potential bounce"
+        else:
+            trend_note = f"multiple bullish signals aligning"
+        return (
+            f"{symbol} shows a BUY signal with {conf_pct}% confidence {when} — "
+            f"{regime_note} and the model sees {trend_note}. "
+            f"Monte Carlo simulations give a {mc_prob:.0f}% chance of profit. "
+            f"Suggested position: {kelly_pct:.1f}% of your account."
+        )
+    elif signal == -1:
+        if rsi > 65:
+            trend_note = f"an overbought RSI of {rsi:.0f} suggesting a potential pullback"
+        elif mom < -10:
+            trend_note = f"significant downward momentum ({mom:.0f}% over the past year)"
+        else:
+            trend_note = "multiple bearish signals aligning"
+        return (
+            f"{symbol} shows a SELL/SHORT signal with {conf_pct}% confidence {when} — "
+            f"{regime_note} and the model sees {trend_note}. "
+            f"If you hold {symbol}, consider reducing your position."
+        )
+    else:
+        return (
+            f"{symbol} shows no clear signal right now — {regime_note}. "
+            f"The model's sub-signals are mixed and confidence is below threshold. "
+            f"Best to wait for a clearer setup before trading."
+        )
+
+
 # ─── Master Quant Engine
 
 class QuantEngine:
@@ -546,10 +628,10 @@ class QuantEngine:
     - Monte Carlo risk gate
     """
 
-    # Class-level ML cache: symbol → {"model": MLSignal, "ts": float, "n_rows": int}
-    # 4-hour TTL; also retrain if dataset grew by >5 rows since last fit.
+    # Class-level ML cache: (symbol, horizon, data_hash) → {"model": MLSignal, "ts": float}
+    # 24-hour TTL; data_hash detects fresh data even within the TTL window.
     _ML_CACHE:     dict = {}
-    _ML_CACHE_TTL: float = 4 * 3600  # seconds
+    _ML_CACHE_TTL: float = 24 * 3600  # seconds
     _ML_LOCK = __import__("threading").Lock()
 
     def __init__(self):
@@ -564,22 +646,23 @@ class QuantEngine:
         self.mc_risk         = MonteCarloRisk(n_simulations=500, horizon=21)
         self.metrics         = PerformanceMetrics()
 
-    def _get_ml_signal(self, features: pd.DataFrame, symbol: str) -> MLSignal:
-        """Return a trained MLSignal for this symbol, reusing cache when fresh."""
-        import time as _t
-        now     = _t.time()
-        n_rows  = len(features)
+    def _get_ml_signal(self, features: pd.DataFrame, symbol: str,
+                       horizon: str = DEFAULT_HORIZON) -> MLSignal:
+        """Return a trained MLSignal, keyed by (symbol, horizon, data_hash) with 24h TTL."""
+        import time as _t, hashlib as _hl
+        now = _t.time()
+        # Cheap hash: last-close price fingerprint of the trailing 30 bars
+        tail = features["ret_1d_norm"].iloc[-30:] if "ret_1d_norm" in features.columns else features.iloc[-30:, 0]
+        data_hash = _hl.md5(tail.values.tobytes()).hexdigest()[:12]
+        cache_key = (symbol, horizon, data_hash)
         with self._ML_LOCK:
-            entry = self._ML_CACHE.get(symbol)
-            if (entry is not None
-                    and (now - entry["ts"]) < self._ML_CACHE_TTL
-                    and abs(n_rows - entry["n_rows"]) < 6):
+            entry = self._ML_CACHE.get(cache_key)
+            if entry is not None and (now - entry["ts"]) < self._ML_CACHE_TTL:
                 return entry["model"]
-        # Train fresh model
         ml = MLSignal()
         ml.fit(features.iloc[:-1])
         with self._ML_LOCK:
-            self._ML_CACHE[symbol] = {"model": ml, "ts": now, "n_rows": n_rows}
+            self._ML_CACHE[cache_key] = {"model": ml, "ts": now}
         return ml
 
     def analyze(self, df: pd.DataFrame, symbol: str = "UNKNOWN",
@@ -596,7 +679,7 @@ class QuantEngine:
         returns = df["Close"].pct_change().dropna().values
 
         # 2. Get per-symbol ML model (cached; trains on first call, reuses thereafter)
-        ml_signal = self._get_ml_signal(features, symbol)
+        ml_signal = self._get_ml_signal(features, symbol, horizon)
 
         # 3. Regime detection
         regime = self.regime_det.detect(features)
@@ -663,6 +746,11 @@ class QuantEngine:
         horizon_score = self._horizon_score(features, indicators, risk, confidence,
                                             exp_ret, mc, horizon)
 
+        # Plain-English beginner summary
+        beginner_summary = _build_beginner_summary(
+            symbol, composite, confidence, regime, indicators, risk, mc, kelly_f, horizon
+        )
+
         return QuantResult(
             symbol=symbol,
             signals=signals,
@@ -678,6 +766,9 @@ class QuantEngine:
             monte_carlo=mc,
             horizon=horizon,
             horizon_score=round(horizon_score, 6),
+            beginner_summary=beginner_summary,
+            oos_sharpe=round(ml_signal.oos_sharpe, 3),
+            feature_importance=ml_signal.top_features,
         )
 
     def _signal_generators_for_horizon(self, horizon: str, ml_signal: "MLSignal") -> list:

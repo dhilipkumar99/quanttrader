@@ -5,7 +5,7 @@ import { useTrader } from "@/store/trader";
 import { cn, fmtPct } from "@/lib/utils";
 import {
   BarChart2, Globe, Zap, FlaskConical, LayoutDashboard,
-  Search, Info, BookOpen, Plus, X, ChevronDown, ChevronUp, GitCompare, Bot, Crosshair,
+  Search, Info, BookOpen, Plus, X, ChevronDown, ChevronUp, GitCompare, Bot, Crosshair, Activity,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -19,6 +19,7 @@ const NAV_ITEMS: { id: Tab; label: string; Icon: React.FC<{ className?: string }
   { id: "agent",     label: "Agent",      Icon: Bot,            key: "G" },
   { id: "simulator", label: "Backtest",   Icon: FlaskConical,   key: "S" },
   { id: "portfolio", label: "Portfolio",  Icon: LayoutDashboard, key: "P" },
+  { id: "intraday",  label: "Intraday",   Icon: Activity,        key: "I" },
 ];
 
 interface Props {

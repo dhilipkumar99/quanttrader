@@ -19,9 +19,9 @@ if os.path.exists(_env_path):
                 _k, _v = _line.split("=", 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 import time as _time
 import threading as _threading
@@ -94,6 +94,9 @@ def _build_analyze_val(result, quote, quote_source, data_source):
         "indicators":           result.indicators,
         "monte_carlo":          result.monte_carlo,
         "data_source":          source_label,
+        "beginner_summary":     getattr(result, "beginner_summary", ""),
+        "oos_sharpe":           getattr(result, "oos_sharpe", 0.0),
+        "feature_importance":   getattr(result, "feature_importance", []),
         "signals": [
             {
                 "source":      s.source,
@@ -464,6 +467,25 @@ def backtest(symbol: str = "AAPL", period: str = "1y", cash: float = 100_000):
         return trader.run_backtest(df, sym)
 
     val = _cached(cache_key, ttl=600, fn=_compute)
+    if val is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return val
+
+
+@app.get("/api/backtest/stress")
+def backtest_stress(symbol: str = "AAPL", period: str = "5y", cash: float = 100_000):
+    """Run the strategy across 5 auto-labelled market-regime slices of history."""
+    sym = symbol.upper()
+    cache_key = f"backtest_stress:{sym}:{period}"
+
+    def _compute():
+        df = fetch(sym, period=period, interval="1d")
+        if df.empty:
+            return None
+        trader = PaperTrader(initial_cash=cash)
+        return trader.run_stress_test(df, sym)
+
+    val = _cached(cache_key, ttl=3600, fn=_compute)
     if val is None:
         return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
     return val
@@ -1061,10 +1083,91 @@ def signal_history(symbol: str = "AAPL", period: str = "1y"):
     return val
 
 
+@app.get("/api/leaderboard")
+def leaderboard(horizon: str = "swing"):
+    """
+    Signal leaderboard: aggregated win-rate and avg return across 20 core symbols
+    over the past year. Cached 1 hour — expensive but rare.
+    """
+    import concurrent.futures
+
+    CORE_SYMBOLS = [
+        "AAPL", "NVDA", "MSFT", "GOOGL", "META", "AMZN", "TSLA",
+        "AMD", "NFLX", "JPM", "BAC", "GS", "ORCL", "ADBE", "CRM",
+        "SPY", "QQQ", "XLK", "XLF", "COST",
+    ]
+    cache_key = f"leaderboard:{horizon}"
+
+    def _compute():
+        WARMUP = 60; STEP = 10; FWDLOOK = 10
+        rows = []
+
+        def _do_one(sym: str):
+            try:
+                df = fetch(sym, period="1y", interval="1d")
+                if df.empty or len(df) < 80:
+                    return None
+                closes = df["Close"].values
+                dates  = [str(d)[:10] for d in df.index]
+                executed, wins, losses, rets = 0, 0, 0, []
+                for i in range(WARMUP, len(df) - FWDLOOK, STEP):
+                    window = df.iloc[:i]
+                    try:
+                        r = _engine.analyze(window, sym, horizon=horizon)
+                    except Exception:
+                        continue
+                    sig = r.composite_signal
+                    if sig == 0:
+                        continue
+                    price_now = float(closes[i])
+                    price_fwd = float(closes[i + FWDLOOK])
+                    fwd_ret = (price_fwd - price_now) / price_now * 100
+                    directed = fwd_ret if sig == 1 else -fwd_ret
+                    executed += 1
+                    rets.append(directed)
+                    if directed > 0.5:
+                        wins += 1
+                    elif directed < -0.5:
+                        losses += 1
+                if executed == 0:
+                    return None
+                return {
+                    "symbol":       sym,
+                    "horizon":      horizon,
+                    "signals":      executed,
+                    "wins":         wins,
+                    "losses":       losses,
+                    "win_rate":     round(wins / max(wins + losses, 1) * 100, 1),
+                    "avg_return":   round(sum(rets) / len(rets), 2),
+                    "last_updated": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                }
+            except Exception:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            for item in ex.map(_do_one, CORE_SYMBOLS):
+                if item is not None:
+                    rows.append(item)
+
+        rows.sort(key=lambda x: x["win_rate"], reverse=True)
+        return {
+            "horizon": horizon,
+            "rows": rows,
+            "symbols_scored": len(rows),
+            "generated_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+        }
+
+    val = _cached(cache_key, ttl=3600, fn=_compute)
+    if val is None:
+        return JSONResponse({"error": "computing", "retry_after": 60}, status_code=503, headers={"Retry-After": "60"})
+    return val
+
+
 @app.get("/api/daytrade-picks")
 def daytrade_picks(limit: int = 20, universe: str = "sp500",
                    horizon: str = DEFAULT_HORIZON,
-                   include_shorts: bool = False):
+                   include_shorts: bool = False,
+                   beginner: bool = False):
     """
     Rank S&P 500 symbols by expected return for the chosen trading horizon.
 
@@ -1245,6 +1348,25 @@ def daytrade_picks(limit: int = 20, universe: str = "sp500",
             status_code=503,
             headers={"Retry-After": "5"},
         )
+
+    # Server-side beginner filter: stricter safety constraints
+    if beginner and val and "picks" in val:
+        raw_picks = val["picks"]
+        filtered = [
+            p for p in raw_picks
+            if p.get("confidence", 0) >= 0.55           # minimum conviction
+            and p.get("max_drawdown", 1.0) <= 0.25      # max 25% historical drawdown
+            and p.get("sharpe", 0) >= 0.4               # minimum risk-adjusted return
+            and p.get("price", 0) >= 10.0               # no penny stocks
+            and p.get("direction") == "long"             # longs only in beginner mode
+        ]
+        return {
+            **val,
+            "picks": filtered[:limit],
+            "total_picks": len(filtered[:limit]),
+            "beginner_filtered": True,
+            "beginner_total_before_filter": len(raw_picks),
+        }
     return val
 
 
@@ -1362,9 +1484,82 @@ async def agent_config_update(request: Request):
     body = await request.json()
     return _agent.set_config(body)
 
+@app.get("/api/agent/export")
+def agent_export():
+    """Return a portable JSON blob of the current agent config (safe to share)."""
+    import json as _json, base64 as _b64
+    cfg = _agent.get_config()
+    # Strip sensitive fields before exporting
+    cfg.pop("notify_email", None)
+    blob = _b64.urlsafe_b64encode(_json.dumps(cfg).encode()).decode()
+    return {"config": cfg, "blob": blob}
+
+@app.post("/api/agent/import")
+async def agent_import(request: Request):
+    """Apply a shared agent config blob (base64 or raw JSON object)."""
+    import json as _json, base64 as _b64
+    body = await request.json()
+    raw = body.get("blob") or body.get("config")
+    if isinstance(raw, str):
+        try:
+            decoded = _json.loads(_b64.urlsafe_b64decode(raw + "=="))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid config blob")
+    elif isinstance(raw, dict):
+        decoded = raw
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'blob' (base64 str) or 'config' (object)")
+    # Whitelist safe keys — never let import overwrite runtime-only state
+    safe_keys = {"enabled", "dry_run", "symbols", "horizon", "min_confidence",
+                 "kelly_cap_pct", "daily_loss_cap_pct", "max_concentration_pct",
+                 "poll_interval_min", "allow_short"}
+    filtered = {k: v for k, v in decoded.items() if k in safe_keys}
+    return _agent.set_config(filtered)
+
 @app.get("/api/agent/status")
 def agent_status():
     return _agent.get_status()
+
+
+@app.get("/api/agent/stream")
+async def agent_stream(request: Request):
+    """
+    Server-Sent Events stream for real-time agent status.
+    Emits whenever journal count changes (trade fired) or running state changes.
+    Falls back to a heartbeat every 30s.
+    """
+    import asyncio
+    import json as _json
+
+    async def _generator():
+        last_count = -1
+        last_running = None
+        while not await request.is_disconnected():
+            try:
+                state = _agent.get_status()
+                count = state.get("journal_count", 0)
+                running = state.get("running", False)
+                # Emit on first connect and on any state change
+                if count != last_count or running != last_running:
+                    last_count = count
+                    last_running = running
+                    yield f"data: {_json.dumps(state)}\n\n"
+                else:
+                    # Heartbeat to keep connection alive
+                    yield ": heartbeat\n\n"
+            except Exception:
+                yield ": error\n\n"
+            await asyncio.sleep(5)
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 @app.post("/api/agent/run")
 def agent_run():
@@ -1379,6 +1574,134 @@ def agent_journal(limit: int = 50):
 def agent_digest():
     """Morning digest: latest signal + sentiment for each watched symbol."""
     return _cached("agent_digest", ttl=300, fn=_agent.get_digest)
+
+
+@app.get("/api/agent/track-record")
+def agent_track_record():
+    """Live signal outcome log — win/loss on trades the agent actually fired."""
+    return _agent.get_track_record()
+
+
+@app.get("/api/circuit-breaker")
+def circuit_breaker_status():
+    """Current state of the account-level circuit breaker."""
+    from api.quant.circuit_breaker import get_status
+    return get_status()
+
+
+@app.post("/api/circuit-breaker/configure")
+async def circuit_breaker_configure(request: Request):
+    """Update circuit breaker config (threshold_pct, notify_email)."""
+    from api.quant.circuit_breaker import configure
+    body = await request.json()
+    return configure(
+        threshold_pct=body.get("threshold_pct"),
+        notify_email=body.get("notify_email"),
+    )
+
+
+@app.post("/api/circuit-breaker/reset")
+def circuit_breaker_reset():
+    """Manually clear a tripped circuit breaker after reviewing the situation."""
+    from api.quant.circuit_breaker import reset
+    return reset()
+
+
+@app.post("/api/circuit-breaker/check")
+def circuit_breaker_check():
+    """Force an immediate equity check. Returns current breaker state."""
+    from api.quant.circuit_breaker import check_and_trip, get_status
+    check_and_trip()
+    return get_status()
+
+
+@app.get("/api/agent/debrief/{trade_id:path}")
+def agent_debrief(trade_id: str):
+    """
+    Post-trade debrief for a single journal entry.
+    trade_id = the entry's ts field (ISO timestamp), URL-encoded by the client.
+    Returns plain-English analysis: what happened vs expected, which signals fired,
+    whether they were right, and a one-sentence summary.
+    """
+    result = _agent.get_debrief(trade_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+# ── Intraday agent endpoints ──────────────────────────────────────────────────
+
+@app.post("/api/intraday/start")
+async def intraday_start(request: Request):
+    """
+    Start an intraday session.
+    Body: { symbol, direction (1 or -1), account_size, risk_per_trade_pct?,
+            max_trades?, dry_run? }
+    """
+    from api.quant.intraday_agent import get_agent, IntradayConfig
+    body = await request.json()
+    try:
+        cfg = IntradayConfig(
+            symbol             = str(body.get("symbol", "")).upper().strip(),
+            direction          = int(body.get("direction", 1)),
+            account_size       = float(body.get("account_size", 10_000)),
+            risk_per_trade_pct = float(body.get("risk_per_trade_pct", 1.0)),
+            stop_atr_mult      = float(body.get("stop_atr_mult", 1.5)),
+            max_trades         = int(body.get("max_trades", 5)),
+            dry_run            = bool(body.get("dry_run", True)),
+            notify_email       = str(body.get("notify_email", "")).strip(),
+        )
+        if not cfg.symbol:
+            raise ValueError("symbol is required")
+        if cfg.direction not in (1, -1):
+            raise ValueError("direction must be 1 (LONG) or -1 (SHORT)")
+        if cfg.risk_per_trade_pct < 0.5 or cfg.risk_per_trade_pct > 2.0:
+            raise ValueError("risk_per_trade_pct must be between 0.5% and 2.0%")
+
+        # Buying power check for live sessions — compare max possible position size
+        # against actual Alpaca account buying power to catch mismatched account inputs.
+        if not cfg.dry_run:
+            from api.quant.broker import get_account
+            acct = get_account()
+            if acct is not None:
+                # Max position = 20% of account (position size cap in _compute_qty)
+                max_position_dollars = cfg.account_size * 0.20
+                if max_position_dollars > acct.buying_power:
+                    raise ValueError(
+                        f"Insufficient buying power: session account_size ${cfg.account_size:,.0f} implies "
+                        f"a max position of ${max_position_dollars:,.0f}, but your Alpaca account only has "
+                        f"${acct.buying_power:,.2f} in buying power. "
+                        f"Lower account_size to ≤${acct.buying_power * 5:,.0f} or fund your account."
+                    )
+
+        get_agent().start(cfg)
+        return {"ok": True, "symbol": cfg.symbol, "direction": cfg.direction, "dry_run": cfg.dry_run}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/intraday/stop")
+def intraday_stop():
+    """Stop the intraday agent (force-closes any open position first)."""
+    from api.quant.intraday_agent import get_agent
+    get_agent().stop()
+    return {"ok": True}
+
+
+@app.get("/api/intraday/status")
+def intraday_status():
+    """Current intraday agent status, live trade log, P&L."""
+    from api.quant.intraday_agent import get_agent
+    return get_agent().get_status()
+
+
+@app.get("/api/intraday/history")
+def intraday_history(limit: int = Query(default=30, ge=1, le=100)):
+    """Cross-session track record: each past session's symbol, direction, trades, P&L, max drawdown."""
+    from api.quant.intraday_agent import get_session_history
+    return {"sessions": get_session_history(limit=limit)}
 
 
 # ── NASDAQ endpoints ──────────────────────────────────────────────────────────

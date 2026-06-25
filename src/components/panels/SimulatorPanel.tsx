@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
 import { EquityChart } from "@/components/charts/EquityChart";
 import { InfoTooltip } from "@/components/ui/Tooltip";
 import { fmt, fmtPct, fmtMoney } from "@/lib/utils";
 import type { BacktestResult } from "@/types/quant";
-import { FlaskConical, AlertTriangle, Timer, BookOpen } from "lucide-react";
+import { api, type StressTestResult, type RegimeResult } from "@/lib/api";
+import { FlaskConical, AlertTriangle, Timer, BookOpen, Shield, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 
 const FONT_BODY = "'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif";
 
@@ -116,6 +117,173 @@ function BacktestVerdict({ result, cash }: { result: BacktestResult; cash: numbe
           </span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Regime colour map ───────────────────────────────────────────────────────
+
+function regimeColor(regime: string): string {
+  if (regime.includes("Bull") || regime.includes("Recovery")) return "var(--green)";
+  if (regime.includes("Crash") || regime.includes("Bear"))    return "var(--red)";
+  if (regime.includes("Sideways") || regime.includes("Quiet"))return "var(--blue)";
+  return "var(--yellow)";
+}
+
+// ── Regime stress test card ─────────────────────────────────────────────────
+
+function RegimeStressCard({ symbol }: { symbol: string }) {
+  const [open,    setOpen]    = useState(false);
+  const [data,    setData]    = useState<StressTestResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState("");
+
+  const run = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await api.backtestStress(symbol, "5y", 100_000);
+      setData(res);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Stress test failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [symbol]);
+
+  return (
+    <div className="panel overflow-hidden">
+      {/* Header — toggle open */}
+      <button
+        onClick={() => { setOpen(o => !o); if (!open && !data && !loading) run(); }}
+        className="panel-header w-full text-left"
+        style={{ cursor: "pointer", background: "var(--bg-raised)" }}
+      >
+        <div className="flex items-center gap-1.5">
+          <Shield className="h-3 w-3" style={{ color: "var(--blue)" }} />
+          <span>Regime Stress Test</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {data && (
+            <span style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: FONT_BODY }}>
+              avg Sharpe {data.mean_sharpe >= 0 ? "+" : ""}{data.mean_sharpe.toFixed(2)}
+            </span>
+          )}
+          {open ? <ChevronUp className="h-3 w-3" style={{ color: "var(--text-muted)" }} />
+                : <ChevronDown className="h-3 w-3" style={{ color: "var(--text-muted)" }} />}
+        </div>
+      </button>
+
+      {open && (
+        <div className="p-3 space-y-3">
+          {loading && (
+            <div className="flex items-center gap-2 py-4 justify-center">
+              <RefreshCw className="h-4 w-4 animate-spin" style={{ color: "var(--text-muted)" }} />
+              <span style={{ fontFamily: FONT_BODY, fontSize: "12px", color: "var(--text-muted)" }}>
+                Running 5-regime stress test (5y data)…
+              </span>
+            </div>
+          )}
+
+          {error && (
+            <div className="flex items-start gap-2 text-xs p-3"
+              style={{ background: "var(--red-dim)", border: "1px solid var(--red)44", color: "var(--red)" }}>
+              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span style={{ fontFamily: FONT_BODY }}>{error}</span>
+            </div>
+          )}
+
+          {data && !loading && (
+            <>
+              {/* Summary strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { label: "Regimes Tested", value: String(data.n_regimes) },
+                  { label: "Mean Sharpe",    value: `${data.mean_sharpe >= 0 ? "+" : ""}${data.mean_sharpe.toFixed(2)}`,
+                    color: data.mean_sharpe >= 0.5 ? "var(--green)" : data.mean_sharpe >= 0 ? "var(--yellow)" : "var(--red)" },
+                  { label: "Worst DD",       value: `${data.worst_dd.toFixed(1)}%`,
+                    color: data.worst_dd > 30 ? "var(--red)" : data.worst_dd > 15 ? "var(--yellow)" : "var(--green)" },
+                  { label: "Best Regime",    value: data.best_regime, color: "var(--green)" },
+                ].map(s => (
+                  <div key={s.label} className="panel p-2 text-center">
+                    <div style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "0.1em",
+                      color: "var(--text-muted)", marginBottom: "4px" }}>{s.label}</div>
+                    <div style={{ fontFamily: "'SF Mono','Fira Code',monospace", fontSize: "12px",
+                      fontWeight: 800, color: s.color ?? "var(--text-primary)" }}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Per-regime rows */}
+              <div className="panel overflow-hidden">
+                <table className="t-table">
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", paddingLeft: "12px" }}>Regime</th>
+                      <th style={{ textAlign: "left" }}>Period</th>
+                      <th>Return</th>
+                      <th>Alpha</th>
+                      <th>Sharpe</th>
+                      <th>Max DD</th>
+                      <th>Win %</th>
+                      <th>Trades</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.regimes.map((r: RegimeResult, i: number) => (
+                      <tr key={i}>
+                        <td style={{ textAlign: "left", paddingLeft: "12px" }}>
+                          <span style={{ fontFamily: FONT_BODY, fontSize: "11px", fontWeight: 600,
+                            color: regimeColor(r.regime) }}>{r.regime}</span>
+                        </td>
+                        <td style={{ textAlign: "left" }}>
+                          <span style={{ fontFamily: "'SF Mono',monospace", fontSize: "9px",
+                            color: "var(--text-muted)" }}>{r.start} – {r.end}</span>
+                        </td>
+                        <td><span className="num font-semibold" style={{ fontSize: "11px",
+                          color: r.total_return >= 0 ? "var(--green)" : "var(--red)" }}>
+                          {r.total_return >= 0 ? "+" : ""}{r.total_return.toFixed(1)}%
+                        </span></td>
+                        <td><span className="num" style={{ fontSize: "11px",
+                          color: r.alpha >= 0 ? "var(--green)" : "var(--red)" }}>
+                          {r.alpha >= 0 ? "+" : ""}{r.alpha.toFixed(1)}%
+                        </span></td>
+                        <td><span className="num" style={{ fontSize: "11px",
+                          color: r.sharpe >= 0.5 ? "var(--green)" : r.sharpe >= 0 ? "var(--yellow)" : "var(--red)" }}>
+                          {r.sharpe.toFixed(2)}
+                        </span></td>
+                        <td><span className="num" style={{ fontSize: "11px",
+                          color: r.max_drawdown > 25 ? "var(--red)" : "var(--text-secondary)" }}>
+                          {r.max_drawdown.toFixed(1)}%
+                        </span></td>
+                        <td className="num" style={{ fontSize: "11px" }}>{r.win_rate.toFixed(0)}%</td>
+                        <td className="num" style={{ fontSize: "11px", color: "var(--text-muted)" }}>{r.n_trades}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Plain-English verdict */}
+              <div style={{ padding: "10px 14px", background: "rgba(11,31,58,0.04)",
+                border: "1px solid var(--border)", fontFamily: FONT_BODY, fontSize: "12px",
+                color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                {data.mean_sharpe >= 1.0
+                  ? `The strategy is robust across all tested regimes (avg Sharpe ${data.mean_sharpe.toFixed(2)}). It holds up in both trending and volatile markets — a strong signal for real-capital deployment.`
+                  : data.mean_sharpe >= 0.3
+                  ? `Mixed cross-regime performance (avg Sharpe ${data.mean_sharpe.toFixed(2)}). The strategy works better in some regimes than others. Best in ${data.best_regime} periods; most challenged in ${data.worst_regime} conditions.`
+                  : `The strategy struggled across regimes (avg Sharpe ${data.mean_sharpe.toFixed(2)}). The worst regime (${data.worst_regime}) drove ${data.worst_dd.toFixed(1)}% drawdown. Consider raising the minimum confidence threshold before live trading.`}
+              </div>
+
+              <button onClick={run}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5"
+                style={{ color: "var(--text-muted)", border: "1px solid var(--border)", background: "transparent" }}>
+                <RefreshCw className="h-3 w-3" /> Re-run
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -256,6 +424,9 @@ export function SimulatorPanel({ result, loading, onRun, symbol }: {
 
           {/* Plain-English interpretation */}
           <BacktestVerdict result={result} cash={Number(cash)} />
+
+          {/* Regime stress test — collapsible; runs lazily on expand */}
+          <RegimeStressCard symbol={symbol} />
 
           {/* Equity curve */}
           <Card>

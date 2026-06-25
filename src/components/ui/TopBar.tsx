@@ -1,8 +1,9 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import type { Tab } from "@/app/page";
-import { Menu, Search } from "lucide-react";
+import { Menu, Search, Sparkles } from "lucide-react";
 import { AlertBell } from "@/components/ui/AlertBell";
+import { useTrader } from "@/store/trader";
 
 const PERIODS = ["1mo","3mo","6mo","1y","2y","5y"];
 
@@ -15,9 +16,13 @@ interface Props {
   onTabChange: (t: Tab) => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  beginnerMode: boolean;
+  onToggleBeginnerMode: () => void;
 }
 
-export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeTab, onTabChange, sidebarCollapsed, onToggleSidebar }: Props) {
+export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeTab, onTabChange, sidebarCollapsed, onToggleSidebar, beginnerMode, onToggleBeginnerMode }: Props) {
+  const { onboarding } = useTrader();
+  const isLive = onboarding.brokerConnected && process.env.NEXT_PUBLIC_ALPACA_LIVE === "true";
   const [input, setInput] = useState(symbol);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -31,6 +36,7 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
   const TABS: { id: Tab; label: string; key: string }[] = [
     { id: "picks",     label: "Best Picks", key: "K" },
     { id: "analysis",  label: "Analysis",   key: "A" },
+    { id: "intraday",  label: "Intraday",   key: "I" },
     { id: "compare",   label: "Compare",    key: "C" },
     { id: "scanner",   label: "Scanner",    key: "N" },
     { id: "market",    label: "Market",     key: "M" },
@@ -179,7 +185,30 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
         ))}
       </div>
 
-      {/* Right: alerts bell + LIVE status */}
+      {/* Right: beginner mode toggle + alerts bell + LIVE status */}
+      <div
+        className="flex items-center flex-shrink-0 h-full px-3 gap-2"
+        style={{ borderLeft: "1px solid rgba(255,255,255,0.1)" }}
+      >
+        <button
+          onClick={onToggleBeginnerMode}
+          title={beginnerMode ? "Switch to Expert Mode" : "Switch to Beginner Mode"}
+          style={{
+            display: "flex", alignItems: "center", gap: "5px",
+            padding: "3px 10px",
+            background: beginnerMode ? "rgba(250,204,21,0.18)" : "rgba(255,255,255,0.07)",
+            border: `1px solid ${beginnerMode ? "rgba(250,204,21,0.5)" : "rgba(255,255,255,0.15)"}`,
+            color: beginnerMode ? "#FDE047" : "rgba(255,255,255,0.55)",
+            fontSize: "10px", fontWeight: 700,
+            letterSpacing: "0.08em", textTransform: "uppercase",
+            cursor: "pointer", transition: "all 0.2s",
+            fontFamily: "'Palatino Linotype', Palatino, serif",
+          }}
+        >
+          <Sparkles size={11} />
+          {beginnerMode ? "Beginner" : "Expert"}
+        </button>
+      </div>
       <div
         className="flex items-center flex-shrink-0 h-full"
         style={{ borderLeft: "1px solid rgba(255,255,255,0.1)" }}
@@ -192,17 +221,20 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
       >
         <span
           className="h-1.5 w-1.5 rounded-full animate-pulse"
-          style={{ background: "#1A6B4A" }}
+          style={{ background: isLive ? "#C41E3A" : "#1A6B4A" }}
         />
         <span style={{
           fontFamily: "'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif",
           fontSize: "9px",
-          fontWeight: 600,
+          fontWeight: 700,
           letterSpacing: "0.2em",
           textTransform: "uppercase",
-          color: "rgba(255,255,255,0.5)",
+          color: isLive ? "#C41E3A" : "#1A6B4A",
+          background: isLive ? "rgba(196,30,58,0.12)" : "rgba(26,107,74,0.12)",
+          padding: "2px 8px",
+          border: `1px solid ${isLive ? "rgba(196,30,58,0.35)" : "rgba(26,107,74,0.35)"}`,
         }}>
-          LIVE
+          {onboarding.brokerConnected ? (isLive ? "LIVE" : "PAPER") : "WATCH ONLY"}
         </span>
       </div>
     </header>

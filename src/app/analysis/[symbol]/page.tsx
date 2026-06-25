@@ -10,7 +10,7 @@ async function getAnalysis(symbol: string) {
   try {
     const base = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3002";
+      : "http://localhost:3000";
     const res = await fetch(`${base}/api/analyze?symbol=${encodeURIComponent(symbol)}&period=1y`, {
       next: { revalidate: 60 },
     });

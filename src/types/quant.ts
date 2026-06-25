@@ -52,6 +52,9 @@ export interface AnalysisResult {
   monte_carlo: MonteCarlo;
   signals: SubSignal[];
   data_source?: string;
+  beginner_summary?: string;
+  oos_sharpe?: number;
+  feature_importance?: [string, number][];
 }
 
 export interface WatchlistItem {

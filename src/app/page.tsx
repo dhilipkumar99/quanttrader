@@ -20,6 +20,10 @@ import { AgentPanel } from "@/components/panels/AgentPanel";
 import { DayTradePicksPanel } from "@/components/panels/DayTradePicksPanel";
 import { TradingCockpit } from "@/components/panels/TradingCockpit";
 import { OptionsPanel } from "@/components/panels/OptionsPanel";
+import { BeginnerModeView } from "@/components/panels/BeginnerModeView";
+import { IntradayPanel } from "@/components/panels/IntradayPanel";
+import { SimplifiedDashboard } from "@/components/panels/SimplifiedDashboard";
+import { LeaderboardPanel } from "@/components/panels/LeaderboardPanel";
 
 // UI
 import { PriceTicker } from "@/components/ui/PriceTicker";
@@ -31,7 +35,7 @@ import { StatusBar } from "@/components/ui/StatusBar";
 import { PriceChart } from "@/components/charts/PriceChart";
 import { AlertTriangle, Database, RefreshCw } from "lucide-react";
 
-export type Tab = "analysis" | "simulator" | "portfolio" | "market" | "trading" | "scanner" | "compare" | "agent" | "picks";
+export type Tab = "analysis" | "simulator" | "portfolio" | "market" | "trading" | "scanner" | "compare" | "agent" | "picks" | "intraday";
 
 // Full-width TwelveData line chart used as fallback while candlestick data loads
 function TdSparkFull({ candles }: { candles: ChartCandle[] }) {
@@ -124,9 +128,11 @@ function AppInner() {
     analysis, backtest,
     loading, backtestLoading, error,
     pinnedSymbols, portfolioCapital,
+    beginnerMode,
     setActiveSymbol, setActivePeriod, setActiveTab,
     setAnalysis, setBacktest, setWatchlist,
     setLoading, setBacktestLoading, setError,
+    setBeginnerMode,
   } = useTrader();
 
   const [candles, setCandles] = useState<CandlePoint[]>([]);
@@ -301,6 +307,8 @@ function AppInner() {
         onTabChange={handleTabChange}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed(c => !c)}
+        beginnerMode={beginnerMode}
+        onToggleBeginnerMode={() => setBeginnerMode(!beginnerMode)}
       />
 
       {/* Body = sidebar + content */}
@@ -328,65 +336,78 @@ function AppInner() {
             {activeTab === "analysis" && (
               <>
                 {loading ? <AnalysisSkeleton /> : analysis ? (
-                  <div className="space-y-3">
-                    <PriceTicker symbol={analysis.symbol} initialPrice={analysis.price} initialChangePct={analysis.change_pct} />
-                    {/* Data source badge */}
-                    {dataSourceBadge && <DataSourceBadge source={dataSourceBadge} />}
-                    {/* Trading Cockpit — synthesized action plan for this stock */}
-                    <TradingCockpit data={analysis} accountSize={portfolioCapital} />
-                    {/* Price chart — TwelveData shows immediately from cache, candlestick follows */}
-                    {(candles.length > 0 || tdCandles !== null) && (
-                      <div className="panel p-3">
-                        <div className="panel-header" style={{ margin: "-12px -12px 8px" }}>
-                          <span>{analysis.symbol} — {activePeriod.toUpperCase()}</span>
-                          <span style={{ fontSize: "9px", color: "var(--text-muted)" }}>
-                            {candles.length > 0 ? "▲ buy signal · ▼ sell signal" : "price chart · TwelveData"}
-                          </span>
-                        </div>
-                        {candles.length > 0
-                          ? <PriceChart data={candles} symbol={analysis.symbol} />
-                          : tdCandles && <TdSparkFull candles={tdCandles} />
-                        }
-                      </div>
-                    )}
-                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-                      <div className="xl:col-span-2 space-y-3">
-                        <SignalPanel data={analysis} onCompare={() => handleTabChange("compare")} />
-                        <SignalExplainer data={analysis} />
-                        {/* Options horizon selector + panel */}
-                        <div>
-                          <div style={{ display: "flex", gap: "4px", marginBottom: "6px", flexWrap: "wrap" }}>
-                            {(["day", "swing", "month", "quarter", "year"] as const).map(h => (
-                              <button
-                                key={h}
-                                onClick={() => setOptionsHorizon(h)}
-                                style={{
-                                  fontFamily: "'Palatino Linotype', Palatino, serif",
-                                  fontSize: "9px", fontWeight: 600,
-                                  letterSpacing: "0.1em", textTransform: "uppercase",
-                                  padding: "3px 10px", cursor: "pointer",
-                                  background: optionsHorizon === h ? "var(--blue)" : "var(--bg-raised)",
-                                  color: optionsHorizon === h ? "#FFFFFF" : "var(--text-muted)",
-                                  border: `1px solid ${optionsHorizon === h ? "var(--blue)" : "var(--border)"}`,
-                                  transition: "all 0.15s",
-                                }}
-                              >
-                                {h}
-                              </button>
-                            ))}
-                            <span style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "9px", color: "var(--text-muted)", alignSelf: "center", marginLeft: "4px" }}>
-                              options horizon
+                  beginnerMode ? (
+                    <BeginnerModeView
+                      data={analysis}
+                      accountSize={portfolioCapital}
+                      period={activePeriod}
+                      onExpertMode={() => setBeginnerMode(false)}
+                    />
+                  ) : (
+                    <div className="space-y-3">
+                      <PriceTicker symbol={analysis.symbol} initialPrice={analysis.price} initialChangePct={analysis.change_pct} />
+                      {/* Data source badge */}
+                      {dataSourceBadge && <DataSourceBadge source={dataSourceBadge} />}
+                      {/* Trading Cockpit — synthesized action plan for this stock */}
+                      <TradingCockpit data={analysis} accountSize={portfolioCapital} />
+                      {/* Price chart — TwelveData shows immediately from cache, candlestick follows */}
+                      {(candles.length > 0 || tdCandles !== null) && (
+                        <div className="panel p-3">
+                          <div className="panel-header" style={{ margin: "-12px -12px 8px" }}>
+                            <span>{analysis.symbol} — {activePeriod.toUpperCase()}</span>
+                            <span style={{ fontSize: "9px", color: "var(--text-muted)" }}>
+                              {candles.length > 0 ? "▲ buy signal · ▼ sell signal" : "price chart · TwelveData"}
                             </span>
                           </div>
-                          <OptionsPanel symbol={analysis.symbol} horizon={optionsHorizon} />
+                          {candles.length > 0
+                            ? <PriceChart data={candles} symbol={analysis.symbol} />
+                            : tdCandles && <TdSparkFull candles={tdCandles} />
+                          }
                         </div>
-                        <SignalHistoryPanel symbol={analysis.symbol} period={activePeriod} />
-                      </div>
-                      <div>
-                        <IndicatorsPanel indicators={analysis.indicators} />
+                      )}
+                      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+                        <div className="xl:col-span-2 space-y-3">
+                          <SignalPanel data={analysis} onCompare={() => handleTabChange("compare")} />
+                          <SignalExplainer data={analysis} />
+                          {/* Options horizon selector + panel */}
+                          <div>
+                            <div style={{ display: "flex", gap: "4px", marginBottom: "6px", flexWrap: "wrap" }}>
+                              {(["day", "swing", "month", "quarter", "year"] as const).map(h => (
+                                <button
+                                  key={h}
+                                  onClick={() => setOptionsHorizon(h)}
+                                  style={{
+                                    fontFamily: "'Palatino Linotype', Palatino, serif",
+                                    fontSize: "9px", fontWeight: 600,
+                                    letterSpacing: "0.1em", textTransform: "uppercase",
+                                    padding: "3px 10px", cursor: "pointer",
+                                    background: optionsHorizon === h ? "var(--blue)" : "var(--bg-raised)",
+                                    color: optionsHorizon === h ? "#FFFFFF" : "var(--text-muted)",
+                                    border: `1px solid ${optionsHorizon === h ? "var(--blue)" : "var(--border)"}`,
+                                    transition: "all 0.15s",
+                                  }}
+                                >
+                                  {h}
+                                </button>
+                              ))}
+                              <span style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "9px", color: "var(--text-muted)", alignSelf: "center", marginLeft: "4px" }}>
+                                options horizon
+                              </span>
+                            </div>
+                            <OptionsPanel symbol={analysis.symbol} horizon={optionsHorizon} />
+                          </div>
+                          <SignalHistoryPanel symbol={analysis.symbol} period={activePeriod} />
+                        </div>
+                        <div>
+                          <IndicatorsPanel
+                            indicators={analysis.indicators}
+                            oosSharp={analysis.oos_sharpe}
+                            featureImportance={analysis.feature_importance}
+                          />
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )
                 ) : !error ? (
                   <EmptyState onSymbol={handleSymbol} />
                 ) : null}
@@ -419,10 +440,15 @@ function AppInner() {
               />
             )}
             {activeTab === "agent" && <AgentPanel />}
+            {activeTab === "intraday" && <IntradayPanel />}
             {activeTab === "picks" && (
-              <DayTradePicksPanel
-                onSelectSymbol={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
-              />
+              beginnerMode
+                ? <SimplifiedDashboard
+                    onShowFullAnalysis={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
+                  />
+                : <DayTradePicksPanel
+                    onSelectSymbol={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
+                  />
             )}
           </div>
         </main>
@@ -442,6 +468,7 @@ function AppInner() {
           c: () => handleTabChange("compare"),
           g: () => handleTabChange("agent"),
           k: () => handleTabChange("picks"),
+          i: () => handleTabChange("intraday"),
         }}
       />
     </div>
@@ -450,16 +477,58 @@ function AppInner() {
 
 function EmptyState({ onSymbol }: { onSymbol: (s: string) => void }) {
   const suggestions = ["AAPL", "NVDA", "MSFT", "TSLA", "META", "AMZN"];
+  const { onboarding } = useTrader();
+  const router = useRouter();
   return (
-    <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
-      <div className="text-3xl font-bold" style={{ color: "var(--text-secondary)" }}>QuantTrader Pro</div>
-      <div className="text-sm" style={{ color: "var(--text-muted)" }}>Enter a ticker or pick a popular stock</div>
-      <div className="flex gap-2 flex-wrap justify-center mt-2">
-        {suggestions.map(s => (
-          <button key={s} onClick={() => onSymbol(s)} className="et-btn et-btn-ghost px-4 py-2">
-            {s}
+    <div className="flex flex-col items-center gap-4">
+      <div className="flex flex-col items-center justify-center pt-12 pb-6 gap-4 text-center">
+        <div className="text-3xl font-bold" style={{ color: "var(--text-secondary)", fontFamily: "'Times New Roman', Times, Georgia, serif" }}>QuantTrader</div>
+        <div className="text-sm" style={{ color: "var(--text-muted)", fontFamily: "'Palatino Linotype', Palatino, serif" }}>
+          ML-powered quant signals for every trader
+        </div>
+        {!onboarding.completed && (
+          <button
+            onClick={() => router.push("/onboarding")}
+            style={{
+              display: "flex", alignItems: "center", gap: "6px",
+              fontFamily: "'Palatino Linotype', Palatino, serif",
+              fontSize: "13px", fontWeight: 600,
+              padding: "10px 24px", marginTop: "4px",
+              background: "var(--blue)", color: "#fff",
+              border: "none", cursor: "pointer",
+            }}
+          >
+            Set up my profile →
           </button>
-        ))}
+        )}
+        <div style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "11px", color: "var(--text-disabled)", marginTop: "4px" }}>
+          or search a stock above
+        </div>
+        <div className="flex gap-2 flex-wrap justify-center mt-2">
+          {suggestions.map(s => (
+            <button key={s} onClick={() => onSymbol(s)} className="et-btn et-btn-ghost px-4 py-2">
+              {s}
+            </button>
+          ))}
+        </div>
+        {onboarding.completed && (
+          <button
+            onClick={() => router.push("/onboarding")}
+            style={{
+              fontFamily: "'Palatino Linotype', Palatino, serif",
+              fontSize: "11px", color: "var(--text-disabled)",
+              background: "none", border: "none", cursor: "pointer",
+              textDecoration: "underline", marginTop: "8px",
+            }}
+          >
+            Update my profile
+          </button>
+        )}
+      </div>
+
+      {/* Leaderboard as first-impression trust signal */}
+      <div style={{ width: "100%", maxWidth: "900px" }}>
+        <LeaderboardPanel onSelectSymbol={onSymbol} />
       </div>
     </div>
   );

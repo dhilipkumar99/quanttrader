@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Zap, Shield, Target, Eye, LogOut } from "lucide-react";
+import { ChevronDown, ChevronUp, Zap, Shield, Target, Eye, LogOut, OctagonX } from "lucide-react";
 import type { AnalysisResult } from "@/types/quant";
 
 const FONT_BODY = "'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif";
@@ -129,6 +129,67 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
                     : price * (1 + targetPct / 100);
   const maxLoss     = shares * price * (stopPct / 100);
 
+  // ── Step 1 — Stop loss commitment ────────────────────────────────────
+  const stopStep: Step = {
+    num: 1, icon: <OctagonX className="h-3.5 w-3.5" />,
+    title: "Before anything: decide your exit",
+    status: sig === 0 ? "info" : "stop",
+    body: (
+      <div>
+        {sig === 0 ? (
+          <p style={{ color: C.muted }}>
+            No active signal — no stop needed yet. When a LONG or SHORT appears, this step
+            will show your exact stop price before you size or enter the trade.
+          </p>
+        ) : (
+          <>
+            <p style={{ marginBottom: "8px" }}>
+              {sig === 1 ? (
+                <>
+                  If {sym} drops to{" "}
+                  <B color={C.red}>{fmt$(stopPrice)}</B>{" "}
+                  ({stopPct.toFixed(1)}% below <N>{fmt$(price)}</N>), you&apos;re wrong.{" "}
+                  <B color={C.red}>That is your exit price. Accept it now, before you buy.</B>
+                </>
+              ) : (
+                <>
+                  If {sym} rises to{" "}
+                  <B color={C.red}>{fmt$(stopPrice)}</B>{" "}
+                  ({stopPct.toFixed(1)}% above <N>{fmt$(price)}</N>), the short is wrong.{" "}
+                  <B color={C.red}>That is your cover price. Accept it now, before you short.</B>
+                </>
+              )}
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
+              <div style={{ padding: "8px 10px",
+                background: "rgba(196,30,58,0.07)", border: `1px solid ${C.red}55` }}>
+                <div style={{ fontFamily: FONT_BODY, fontSize: "9px", color: C.faint,
+                  textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "3px" }}>Stop Price</div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: "18px", fontWeight: 800, color: C.red }}>
+                  {fmt$(stopPrice)}
+                </div>
+                <div style={{ fontSize: "10px", color: C.muted }}>1.5× ATR · −{stopPct.toFixed(1)}% from entry</div>
+              </div>
+              <div style={{ padding: "8px 10px",
+                background: "rgba(26,107,74,0.06)", border: `1px solid ${C.green}44` }}>
+                <div style={{ fontFamily: FONT_BODY, fontSize: "9px", color: C.faint,
+                  textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "3px" }}>Target Price</div>
+                <div style={{ fontFamily: FONT_MONO, fontSize: "18px", fontWeight: 800, color: C.green }}>
+                  {fmt$(targetPrice)}
+                </div>
+                <div style={{ fontSize: "10px", color: C.muted }}>2.5:1 R:R · +{targetPct.toFixed(1)}% from entry</div>
+              </div>
+            </div>
+            <p style={{ color: C.faint, fontSize: "11px" }}>
+              ⚠ Set this stop in your broker <B>before</B> the fill confirms.
+              A stop you haven&apos;t placed yet is not a stop — it&apos;s a wish.
+            </p>
+          </>
+        )}
+      </div>
+    ),
+  };
+
   // ── Filter pass/fail ─────────────────────────────────────────────────
   const kellyFail  = kelly === 0;
   const sharpeFail = sharpe < 0;
@@ -150,7 +211,7 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
     overallStatus === "go"      ? "rgba(26,107,74,0.07)"  :
     overallStatus === "caution" ? "rgba(139,105,20,0.08)" : "rgba(196,30,58,0.07)";
 
-  // ── Step 1 — Filter ───────────────────────────────────────────────
+  // ── Step 2 — Filter ───────────────────────────────────────────────
   const filterChecks = [
     {
       label: "Kelly > 0%",
@@ -175,7 +236,7 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
   ];
 
   const step1: Step = {
-    num: 1, icon: <Zap className="h-3.5 w-3.5" />,
+    num: 2, icon: <Zap className="h-3.5 w-3.5" />,
     title: "Before you trade — run the filter",
     status: hardFail ? "stop" : softWarn ? "caution" : "go",
     body: (
@@ -213,9 +274,9 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
     ),
   };
 
-  // ── Step 2 — Size ────────────────────────────────────────────────
+  // ── Step 3 — Size ────────────────────────────────────────────────
   const step2: Step = {
-    num: 2, icon: <Shield className="h-3.5 w-3.5" />,
+    num: 3, icon: <Shield className="h-3.5 w-3.5" />,
     title: "How much to invest",
     status: kelly === 0 ? "stop" : kelly >= 5 ? "go" : "caution",
     body: (
@@ -239,21 +300,21 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
         <div style={{ padding: "6px 10px",
           background: "rgba(196,30,58,0.06)", border: "1px solid rgba(196,30,58,0.25)",
           fontFamily: FONT_MONO, fontSize: "10px", color: C.muted }}>
-          Max loss if stop is hit:{" "}
+          Max loss if stop (Step 1) is hit:{" "}
           <span style={{ color: C.red, fontWeight: 700 }}>−{fmt$(maxLoss)}</span>
-          {" "}({stopPct.toFixed(1)}% below entry × {shares} shares)
+          {" "}({stopPct.toFixed(1)}% × {shares} shares × {fmt$(price)})
         </div>
       </div>
     ),
   };
 
-  // ── Step 3 — Entry ───────────────────────────────────────────────
+  // ── Step 4 — Entry ───────────────────────────────────────────────
   const entryStatus: Step["status"] =
     sig === 0  ? "stop" :
     sig === 1 && regime.includes("trending_down") ? "caution" : "go";
 
   const step3: Step = {
-    num: 3, icon: <Target className="h-3.5 w-3.5" />,
+    num: 4, icon: <Target className="h-3.5 w-3.5" />,
     title: sig === 1 ? "Enter — Buy" : sig === -1 ? "Enter — Short" : "No entry — wait",
     status: entryStatus,
     body: (
@@ -266,49 +327,38 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
           </p>
         ) : (
           <>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", marginBottom: "10px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "10px" }}>
               <div style={{ padding: "8px 10px",
                 background: "rgba(26,107,74,0.07)", border: `1px solid ${C.green}44` }}>
                 <div style={{ fontFamily: FONT_BODY, fontSize: "9px", color: C.faint,
-                  textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "3px" }}>Entry</div>
+                  textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "3px" }}>Entry Price</div>
                 <div style={{ fontFamily: FONT_MONO, fontSize: "16px", fontWeight: 800, color: C.text }}>
                   {fmt$(price)}
                 </div>
-                <div style={{ fontSize: "10px", color: C.muted }}>{shares} shares</div>
-              </div>
-              <div style={{ padding: "8px 10px",
-                background: "rgba(196,30,58,0.07)", border: `1px solid ${C.red}44` }}>
-                <div style={{ fontFamily: FONT_BODY, fontSize: "9px", color: C.faint,
-                  textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "3px" }}>Stop Loss</div>
-                <div style={{ fontFamily: FONT_MONO, fontSize: "16px", fontWeight: 800, color: C.red }}>
-                  {fmt$(stopPrice)}
-                </div>
-                <div style={{ fontSize: "10px", color: C.muted }}>−{stopPct.toFixed(1)}% from entry</div>
+                <div style={{ fontSize: "10px", color: C.muted }}>{shares} shares · {fmt$(actualDollar)}</div>
               </div>
               <div style={{ padding: "8px 10px",
                 background: "rgba(26,107,74,0.05)", border: `1px solid ${C.green}33` }}>
                 <div style={{ fontFamily: FONT_BODY, fontSize: "9px", color: C.faint,
-                  textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "3px" }}>Target</div>
+                  textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "3px" }}>Target Price</div>
                 <div style={{ fontFamily: FONT_MONO, fontSize: "16px", fontWeight: 800, color: C.green }}>
                   {fmt$(targetPrice)}
                 </div>
-                <div style={{ fontSize: "10px", color: C.muted }}>+{targetPct.toFixed(1)}% from entry</div>
+                <div style={{ fontSize: "10px", color: C.muted }}>+{targetPct.toFixed(1)}% · 2.5:1 R:R</div>
               </div>
             </div>
             <p style={{ color: C.muted }}>
               {sig === 1 ? (
                 <>
-                  Buy <B>{shares} shares</B> near <N>{fmt$(price)}</N>. Immediately set a{" "}
-                  <B color={C.red}>stop loss at {fmt$(stopPrice)}</B> — if it drops there your
-                  broker sells automatically, capping your loss at{" "}
-                  <N color={C.red}>−{fmt$(maxLoss)}</N>.
+                  Buy <B>{shares} shares</B> near <N>{fmt$(price)}</N>.
+                  Your stop (<B color={C.red}>{fmt$(stopPrice)}</B>) is already set from Step 1 — confirm it
+                  in your broker <B>before</B> this order fills.
                 </>
               ) : (
                 <>
-                  Short <B>{shares} shares</B> near <N>{fmt$(price)}</N>. Set a{" "}
-                  <B color={C.red}>buy-to-cover stop at {fmt$(stopPrice)}</B> — if it rises
-                  there instead of falling, you exit and cap your loss at{" "}
-                  <N color={C.red}>{fmt$(maxLoss)}</N>.
+                  Short <B>{shares} shares</B> near <N>{fmt$(price)}</N>.
+                  Your buy-to-cover stop (<B color={C.red}>{fmt$(stopPrice)}</B>) is set from Step 1 — confirm it
+                  in your broker <B>before</B> this order fills.
                 </>
               )}
             </p>
@@ -324,11 +374,11 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
     ),
   };
 
-  // ── Step 4 — Monitor ────────────────────────────────────────────
+  // ── Step 5 — Monitor ────────────────────────────────────────────
   const monitorRows =
     sig === 0
       ? [
-          { trigger: "Signal changes to LONG or SHORT", note: `Currently FLAT`, action: "Now you can look at entering. Re-read Steps 2–3 for the entry plan." },
+          { trigger: "Signal changes to LONG or SHORT", note: `Currently FLAT`, action: "Now you can look at entering. Set stop (Step 1), size (Step 3), then enter (Step 4)." },
           { trigger: "Kelly stays at 0%",               note: "Currently 0%",   action: "Do not enter. The model sees no edge. Wait." },
         ]
       : [
@@ -336,10 +386,11 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
           { trigger: "Confidence drops below 55%",      note: `Currently ${(conf * 100).toFixed(0)}%`, action: "Consider reducing to half position size. The models are disagreeing more." },
           { trigger: `RSI ${sig === 1 ? "crosses above 70" : "drops below 30"}`, note: `Currently ${rsi.toFixed(0)}`, action: sig === 1 ? "Overbought. Tighten your trailing stop loss upward." : "Oversold. Consider covering part of your short." },
           { trigger: "Kelly drops to 0%",               note: `Currently ${kelly}%`, action: "Exit the trade. The model no longer has statistical edge." },
+          { trigger: `Price approaches stop (${fmt$(stopPrice)})`, note: "Step 1 stop level", action: "Do NOT move the stop down to avoid a loss. Let it hit. That is what it is for." },
         ];
 
   const step4: Step = {
-    num: 4, icon: <Eye className="h-3.5 w-3.5" />,
+    num: 5, icon: <Eye className="h-3.5 w-3.5" />,
     title: "While in the trade — what to watch",
     status: "info",
     body: (
@@ -377,10 +428,10 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
     ),
   };
 
-  // ── Step 5 — Exit ───────────────────────────────────────────────
+  // ── Step 6 — Exit ───────────────────────────────────────────────
   const exitRows = sig === 0
     ? [
-        { label: "Signal fires",         detail: "LONG or SHORT appears",    color: C.green, what: "Re-run the filter (Step 1). If it passes, execute the entry plan in Steps 2–3." },
+        { label: "Signal fires",         detail: "LONG or SHORT appears",    color: C.green, what: "Re-run the filter (Step 2). If it passes, set your stop (Step 1), size (Step 3), then enter (Step 4)." },
         { label: "15 min before close",  detail: "3:45 PM ET each day",      color: C.blue,  what: "Even if you didn't trade today, close any open positions. Never hold a day trade overnight." },
       ]
     : [
@@ -391,7 +442,7 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
       ];
 
   const step5: Step = {
-    num: 5, icon: <LogOut className="h-3.5 w-3.5" />,
+    num: 6, icon: <LogOut className="h-3.5 w-3.5" />,
     title: "How and when to exit",
     status: "info",
     body: (
@@ -413,7 +464,7 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
     ),
   };
 
-  const steps = [step1, step2, step3, step4, step5];
+  const steps = [stopStep, step1, step2, step3, step4, step5];
 
   return (
     <div className="panel" style={{ overflow: "visible" }}>

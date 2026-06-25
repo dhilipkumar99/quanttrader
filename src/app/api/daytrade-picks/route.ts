@@ -8,8 +8,9 @@ export async function GET(req: NextRequest) {
   const horizon       = p.get("horizon")        ?? "day";
   const universe      = p.get("universe")       ?? "sp500";
   const includeShorts = p.get("include_shorts") ?? "false";
+  const beginner      = p.get("beginner")       ?? "false";
 
-  const url = `${PYTHON_BASE}/api/daytrade-picks?limit=${limit}&horizon=${encodeURIComponent(horizon)}&universe=${encodeURIComponent(universe)}&include_shorts=${includeShorts}`;
+  const url = `${PYTHON_BASE}/api/daytrade-picks?limit=${limit}&horizon=${encodeURIComponent(horizon)}&universe=${encodeURIComponent(universe)}&include_shorts=${includeShorts}&beginner=${beginner}`;
 
   // daytrade-picks scans 80–150 symbols — retry on 503 "computing" within budget
   const delays = [0, 2000];

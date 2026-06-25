@@ -359,6 +359,93 @@ class PaperTrader:
             ],
         }
 
+    # ── Regime stress test ────────────────────────────────────────────────────
+
+    def run_stress_test(self, df: pd.DataFrame, symbol: str) -> dict:
+        """
+        Slice the available history into 5 market-regime segments and run a
+        mini-backtest on each.  Uses the Hurst exponent + 60-day return to
+        classify each slice automatically, so results reflect real regimes
+        the stock actually lived through.
+
+        Returns a list of regime results suitable for UI display.
+        """
+        WARMUP = 60
+        MIN_BARS = WARMUP + 20
+        n = len(df)
+        if n < MIN_BARS:
+            return {"error": "insufficient_data", "min_bars": MIN_BARS}
+
+        # Divide history into 5 roughly-equal segments
+        seg_size = n // 5
+        segments: list[tuple[str, pd.DataFrame]] = []
+        for i in range(5):
+            start = i * seg_size
+            end   = (i + 1) * seg_size if i < 4 else n
+            seg   = df.iloc[start:end]
+            if len(seg) < MIN_BARS:
+                continue
+            label = self._classify_regime(seg)
+            segments.append((label, seg))
+
+        if not segments:
+            return {"error": "insufficient_data_after_split", "min_bars": MIN_BARS}
+
+        results = []
+        for label, seg in segments:
+            self._reset()
+            stats = self.run_backtest(seg.reset_index(drop=False), symbol)
+            if "error" in stats:
+                continue
+            results.append({
+                "regime":       label,
+                "start":        str(seg.index[0])[:10],
+                "end":          str(seg.index[-1])[:10],
+                "bars":         len(seg),
+                "total_return": stats["total_return"],
+                "sharpe":       stats["sharpe"],
+                "max_drawdown": stats["max_drawdown"],
+                "win_rate":     stats["win_rate"],
+                "n_trades":     stats["n_trades"],
+                "alpha":        stats.get("alpha", 0.0),
+            })
+
+        if not results:
+            return {"error": "all_segments_failed"}
+
+        # Summary: worst drawdown, mean Sharpe, best/worst regime
+        sharpes = [r["sharpe"] for r in results]
+        dds     = [r["max_drawdown"] for r in results]
+        return {
+            "symbol":       symbol,
+            "n_regimes":    len(results),
+            "regimes":      results,
+            "mean_sharpe":  round(float(np.mean(sharpes)), 3),
+            "worst_dd":     round(float(max(dds)), 3),
+            "best_regime":  max(results, key=lambda r: r["total_return"])["regime"],
+            "worst_regime": min(results, key=lambda r: r["total_return"])["regime"],
+        }
+
+    @staticmethod
+    def _classify_regime(seg: pd.DataFrame) -> str:
+        """Name a market regime from raw price data using return + volatility."""
+        close  = seg["Close"].astype(float)
+        ret    = (close.iloc[-1] / close.iloc[0] - 1) * 100
+        vol    = close.pct_change().dropna().std() * np.sqrt(252) * 100  # annualised vol %
+        if vol > 35 and ret < -10:
+            return "Crash / High Vol"
+        if vol > 25 and ret < 0:
+            return "Bear / Volatile"
+        if ret > 15 and vol < 20:
+            return "Bull / Low Vol"
+        if ret > 5:
+            return "Recovery / Trending"
+        if abs(ret) <= 5 and vol < 18:
+            return "Sideways / Quiet"
+        if ret < -5:
+            return "Bear / Low Vol"
+        return "Mixed / Choppy"
+
     def _pair_trades(self) -> list[dict]:
         # Long trades: buy → sell
         buys  = [f for f in self.fills if f.side == "buy"]

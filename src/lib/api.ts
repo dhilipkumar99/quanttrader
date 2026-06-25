@@ -1,5 +1,46 @@
 import type { AnalysisResult, BacktestResult, WatchlistItem } from "@/types/quant";
 
+export interface RegimeResult {
+  regime: string;
+  start: string;
+  end: string;
+  bars: number;
+  total_return: number;
+  sharpe: number;
+  max_drawdown: number;
+  win_rate: number;
+  n_trades: number;
+  alpha: number;
+}
+
+export interface StressTestResult {
+  symbol: string;
+  n_regimes: number;
+  regimes: RegimeResult[];
+  mean_sharpe: number;
+  worst_dd: number;
+  best_regime: string;
+  worst_regime: string;
+}
+
+export interface LeaderboardRow {
+  symbol: string;
+  horizon: string;
+  signals: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  avg_return: number;
+  last_updated: string;
+}
+
+export interface LeaderboardResult {
+  horizon: string;
+  rows: LeaderboardRow[];
+  symbols_scored: number;
+  generated_at: string;
+}
+
 export interface SignalHistoryRecord {
   date: string;
   signal: 1 | -1 | 0;
@@ -30,6 +71,9 @@ export interface AgentConfig {
   allow_short: boolean;
   dry_run: boolean;
   notify_email: string;
+  daily_loss_cap_pct: number;
+  max_concentration_pct: number;
+  horizon: "day" | "swing" | "month" | "quarter" | "year";
 }
 
 export interface AgentStatus {
@@ -40,6 +84,13 @@ export interface AgentStatus {
   journal_count: number;
   error: string;
   dry_run: boolean;
+  daily_loss_halted: boolean;
+  daily_loss_halted_date: string;
+  daily_loss_cap_pct: number;
+  last_digest_date: string;
+  paper_equity_start: number;
+  paper_trades_pnl: number;
+  paper_trades_count: number;
 }
 
 export interface JournalEntry {
@@ -56,6 +107,63 @@ export interface JournalEntry {
   reason: string;
   order_id: string;
   dry_run: boolean;
+  outcome: "" | "win" | "loss" | "neutral";
+  outcome_price: number;
+  outcome_return_pct: number;
+}
+
+export interface TrackRecordEntry {
+  ts: string;
+  symbol: string;
+  side: string;
+  signal: number;
+  price: number;
+  outcome: "win" | "loss" | "neutral";
+  outcome_price: number;
+  return_pct: number;
+  confidence: number;
+  regime: string;
+}
+
+export interface AgentTrackRecord {
+  total: number;
+  wins: number;
+  losses: number;
+  neutrals: number;
+  win_rate: number;
+  avg_return_pct: number;
+  entries: TrackRecordEntry[];
+}
+
+export interface CircuitBreakerStatus {
+  tripped: boolean;
+  tripped_at: string;
+  equity_at_trip: number;
+  last_equity: number;
+  drop_pct: number;
+  threshold_pct: number;
+  notify_email: string;
+  alert_sent: boolean;
+}
+
+export interface TradeDebrief {
+  trade_id: string;
+  symbol: string;
+  side: string;
+  signal: string;
+  entry_price: number;
+  outcome_price: number;
+  outcome: "win" | "loss" | "neutral" | "pending";
+  return_pct: number;
+  confidence: number;
+  regime: string;
+  dry_run: boolean;
+  ts: string;
+  what_happened: string;
+  what_was_expected: string;
+  signals_fired: string;
+  signals_verdict: string;
+  one_liner: string;
 }
 
 export interface AgentRunResult {
@@ -322,6 +430,8 @@ export interface DayTradePicksResult {
   horizon: ScanHorizon;
   horizon_label: string;
   generated_at: string;
+  beginner_filtered?: boolean;
+  beginner_total_before_filter?: number;
 }
 
 export interface CandlePoint {
@@ -365,6 +475,9 @@ export const api = {
       `/api/signal-history?symbol=${encodeURIComponent(symbol)}&period=${period}`, 90_000
     ),
 
+  leaderboard: (horizon: "day" | "swing" | "month" = "swing") =>
+    get<LeaderboardResult>(`/api/leaderboard?horizon=${horizon}`, 120_000),
+
   analyze: (symbol: string, period = "1y") =>
     get<AnalysisResult>(`/api/analyze?symbol=${encodeURIComponent(symbol)}&period=${period}`, 45_000),
 
@@ -374,6 +487,12 @@ export const api = {
       55_000  // backtests are slow; give extra time
     ),
 
+  backtestStress: (symbol: string, period = "5y", cash = 100_000) =>
+    get<StressTestResult>(
+      `/api/backtest/stress?symbol=${encodeURIComponent(symbol)}&period=${period}&cash=${cash}`,
+      120_000
+    ),
+
   watchlist: (symbols?: string[]) => {
     const q = symbols ? `?symbols=${symbols.map(encodeURIComponent).join(",")}` : "";
     return get<{ watchlist: WatchlistItem[] }>(`/api/watchlist${q}`, 55_000);
@@ -381,13 +500,26 @@ export const api = {
 
   // ── Agent endpoints ────────────────────────────────────────────────────
   agent: {
-    getConfig: () => get<AgentConfig>("/api/agent/config", 10_000),
-    setConfig: (updates: Partial<AgentConfig>) =>
+    getConfig:      () => get<AgentConfig>("/api/agent/config", 10_000),
+    setConfig:      (updates: Partial<AgentConfig>) =>
       fetchPost<AgentConfig>("/api/agent/config", updates),
-    getStatus: () => get<AgentStatus>("/api/agent/status", 10_000),
-    runOnce:   () => fetchPost<AgentRunResult>("/api/agent/run", {}),
-    getJournal:(limit = 50) => get<{ journal: JournalEntry[]; total: number }>(`/api/agent/journal?limit=${limit}`, 10_000),
-    getDigest:  () => get<AgentDigest>("/api/agent/digest", 120_000),
+    getStatus:      () => get<AgentStatus>("/api/agent/status", 10_000),
+    runOnce:        () => fetchPost<AgentRunResult>("/api/agent/run", {}),
+    getJournal:     (limit = 50) => get<{ journal: JournalEntry[]; total: number }>(`/api/agent/journal?limit=${limit}`, 10_000),
+    getDigest:      () => get<AgentDigest>("/api/agent/digest", 120_000),
+    getTrackRecord: () => get<AgentTrackRecord>("/api/agent/track-record", 10_000),
+    getDebrief:     (tradeId: string) => get<TradeDebrief>(`/api/agent/debrief/${encodeURIComponent(tradeId)}`, 10_000),
+    exportConfig:   () => get<{ config: AgentConfig; blob: string }>("/api/agent/export", 10_000),
+    importConfig:   (blob: string) => fetchPost<AgentConfig>("/api/agent/import", { blob }),
+  },
+
+  // ── Circuit breaker ────────────────────────────────────────────────────
+  circuitBreaker: {
+    getStatus:  () => get<CircuitBreakerStatus>("/api/circuit-breaker", 10_000),
+    configure:  (threshold_pct?: number, notify_email?: string) =>
+      fetchPost<CircuitBreakerStatus>("/api/circuit-breaker/configure", { threshold_pct, notify_email }),
+    reset:      () => fetchPost<CircuitBreakerStatus>("/api/circuit-breaker/reset", {}),
+    check:      () => fetchPost<CircuitBreakerStatus>("/api/circuit-breaker/check", {}),
   },
 
   portfolioRisk: (symbols: string[], period = "1y") =>
@@ -407,8 +539,8 @@ export const api = {
       120_000
     ),
 
-  dayTradePicks: (limit = 20, horizon: ScanHorizon = "day", universe: ScanUniverse = "sp500", includeShorts = false) =>
-    get<DayTradePicksResult>(`/api/daytrade-picks?limit=${limit}&horizon=${horizon}&universe=${universe}&include_shorts=${includeShorts}`, 120_000),
+  dayTradePicks: (limit = 20, horizon: ScanHorizon = "day", universe: ScanUniverse = "sp500", includeShorts = false, beginner = false) =>
+    get<DayTradePicksResult>(`/api/daytrade-picks?limit=${limit}&horizon=${horizon}&universe=${universe}&include_shorts=${includeShorts}&beginner=${beginner}`, 120_000),
 
   charts: {
     sweep: (force = false) =>

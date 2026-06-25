@@ -187,6 +187,107 @@ def submit_order(
     except Exception as e:
         return {"error": "order_failed", "message": str(e)}
 
+
+def submit_bracket_order(
+    symbol: str,
+    qty: float,
+    side: str,                  # "buy" (long entry) or "sell" (short entry)
+    stop_price: float,          # hard stop — broker enforces this even if process dies
+    target_price: float,        # take-profit limit price
+    position_intent: str = "buy_to_open",
+) -> dict:
+    """
+    Submit an atomic bracket order: entry market + stop-loss + take-profit in one request.
+
+    Alpaca guarantees: if the entry fills, the OCO (one-cancels-other) stop+target pair
+    is live at the broker. If the submission itself fails, nothing goes on — no orphaned
+    entry without a stop.
+
+    Returns dict with 'id', 'filled_qty', 'filled_avg_price' on success,
+    or 'error' key on failure. Caller must check for 'error'.
+    """
+    trading, _, _ = _clients()
+    if not trading:
+        return {"error": "no_credentials", "message": "Alpaca API keys not configured."}
+    try:
+        from alpaca.trading.requests import (
+            MarketOrderRequest, StopLossRequest, TakeProfitRequest,
+        )
+        from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
+
+        if side.lower() in ("sell_to_open", "sell_short", "sell"):
+            _side = OrderSide.SELL
+            ok, reason = is_shortable(symbol)
+            if not ok:
+                return {"error": "not_shortable", "message": reason}
+        else:
+            _side = OrderSide.BUY
+
+        req = MarketOrderRequest(
+            symbol        = symbol,
+            qty           = qty,
+            side          = _side,
+            time_in_force = TimeInForce.DAY,
+            order_class   = OrderClass.BRACKET,
+            stop_loss     = StopLossRequest(stop_price=round(stop_price, 2)),
+            take_profit   = TakeProfitRequest(limit_price=round(target_price, 2)),
+        )
+        order = trading.submit_order(req)
+        return {
+            "id":               str(order.id),
+            "symbol":           str(order.symbol),
+            "side":             str(order.side),
+            "position_intent":  position_intent,
+            "qty":              float(order.qty or 0),
+            "order_type":       "bracket",
+            "status":           str(order.status),
+            "filled_qty":       float(order.filled_qty or 0),
+            "filled_avg_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+            "stop_price":       stop_price,
+            "target_price":     target_price,
+            "created_at":       str(order.created_at),
+        }
+    except Exception as e:
+        return {"error": "bracket_order_failed", "message": str(e)}
+
+
+def poll_fill(order_id: str, timeout_seconds: float = 10.0, interval: float = 0.5) -> dict:
+    """
+    Poll /v2/orders/{order_id} until status == 'filled' or timeout expires.
+
+    Returns dict with 'filled_qty' and 'filled_avg_price' on success,
+    or 'error' key if not filled within timeout.
+
+    Used after submit_bracket_order() to confirm the entry leg actually filled
+    before updating internal position state.
+    """
+    import time as _time
+    trading, _, _ = _clients()
+    if not trading:
+        return {"error": "no_credentials"}
+    deadline = _time.monotonic() + timeout_seconds
+    while _time.monotonic() < deadline:
+        try:
+            order = trading.get_order_by_id(order_id)
+            status = str(order.status).lower()
+            if status in ("filled", "partially_filled"):
+                filled_qty   = float(order.filled_qty or 0)
+                filled_price = float(order.filled_avg_price) if order.filled_avg_price else 0.0
+                if filled_qty > 0:
+                    return {
+                        "filled_qty":       filled_qty,
+                        "filled_avg_price": filled_price,
+                        "status":           status,
+                        "order_id":         order_id,
+                    }
+            if status in ("canceled", "expired", "rejected"):
+                return {"error": f"order_{status}", "order_id": order_id}
+        except Exception as e:
+            return {"error": f"poll_error: {e}", "order_id": order_id}
+        _time.sleep(interval)
+    return {"error": "fill_timeout", "order_id": order_id,
+            "message": f"Order not filled within {timeout_seconds}s"}
+
 def cancel_order(order_id: str) -> dict:
     trading, _, _ = _clients()
     if not trading:

@@ -245,7 +245,15 @@ function emaConfig(ema: number): { bar: number; what: string; now: string; actio
 
 // ── Main component ───────────────────────────────────────────────────────────
 
-export function IndicatorsPanel({ indicators: ind }: { indicators: Indicators }) {
+export function IndicatorsPanel({
+  indicators: ind,
+  oosSharp,
+  featureImportance,
+}: {
+  indicators: Indicators;
+  oosSharp?: number;
+  featureImportance?: [string, number][];
+}) {
   const rsi  = rsiConfig(ind.rsi_14 ?? 50);
   const bb   = bbConfig((ind.bb_pct ?? 0) * 100);
   const hst  = hurstConfig(ind.hurst ?? 0.5);
@@ -294,6 +302,59 @@ export function IndicatorsPanel({ indicators: ind }: { indicators: Indicators })
           {hurstLabel}
         </span>
       </div>
+
+      {/* ML model explainability card */}
+      {(oosSharp !== undefined || (featureImportance && featureImportance.length > 0)) && (
+        <div style={{
+          borderTop: "1px solid var(--border)",
+          padding: "8px 12px",
+          background: "rgba(59,130,246,0.04)",
+        }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: "9px", letterSpacing: "0.1em",
+            textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: "6px" }}>
+            ML Model (GBM · Hold-Out Eval)
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
+            {oosSharp !== undefined && (
+              <div>
+                <div style={{ fontFamily: FONT_BODY, fontSize: "9px", color: "rgba(255,255,255,0.35)", marginBottom: "2px" }}>
+                  OOS Sharpe
+                </div>
+                <div style={{
+                  fontFamily: FONT_MONO, fontSize: "13px", fontWeight: 800,
+                  color: oosSharp >= 0.5 ? "var(--green)" : oosSharp >= 0 ? "var(--yellow)" : "var(--red)",
+                }}>
+                  {oosSharp >= 0 ? "+" : ""}{oosSharp.toFixed(2)}
+                </div>
+              </div>
+            )}
+            {featureImportance && featureImportance.length > 0 && (
+              <div style={{ flex: 1, minWidth: "120px" }}>
+                <div style={{ fontFamily: FONT_BODY, fontSize: "9px", color: "rgba(255,255,255,0.35)", marginBottom: "4px" }}>
+                  Top drivers
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                  {featureImportance.map(([name, imp]) => (
+                    <div key={name} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <div style={{
+                        height: "3px", background: "var(--blue)", opacity: 0.7,
+                        width: `${Math.round(imp * 200)}px`, maxWidth: "80px", minWidth: "4px",
+                        transition: "width 0.4s",
+                      }} />
+                      <span style={{ fontFamily: FONT_MONO, fontSize: "9px", color: "rgba(255,255,255,0.5)" }}>
+                        {name.replace(/_/g, " ")}
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: "9px", color: "rgba(255,255,255,0.3)", marginLeft: "auto" }}>
+                        {(imp * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

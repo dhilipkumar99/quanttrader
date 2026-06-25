@@ -797,5 +797,192 @@ def fetch_quote_with_source(symbol: str) -> tuple[dict, str]:
     return result, source
 
 
+# ── Intraday (1-minute) bar fetch ────────────────────────────────────────────
+# Completely separate from the daily-bar path:
+#   - Primary:  TwelveData /time_series?interval=1min (1 call = today's full session)
+#   - Fallback: yfinance download(interval="1m", period="1d")
+#   - Cache TTL: 60 seconds (data refreshes every minute during market hours)
+#   - SQLite key: (symbol, "intraday_1d", "1min")
+#
+# Rate-budget note: TwelveData free tier = 800 credits/day.
+# One intraday fetch = 1 credit. At 60-second TTL, one stock costs
+# max 390 credits/day (one per minute over a 6.5-hour session).
+# This leaves 410 credits for daily-bar sweeps.
+
+_INTRADAY_TTL = 60   # seconds — re-fetch at most once per minute
+
+def _td_fetch_intraday(symbol: str) -> Optional[pd.DataFrame]:
+    """Fetch today's 1-minute bars from TwelveData. Returns DataFrame or None."""
+    if not _TD_API_KEY:
+        return None
+    try:
+        resp = requests.get(
+            f"{_TD_BASE}/time_series",
+            params={
+                "symbol":     symbol,
+                "interval":   "1min",
+                "outputsize": 500,        # covers full 390-bar session + buffer
+                "apikey":     _TD_API_KEY,
+                "format":     "JSON",
+            },
+            timeout=15,
+        )
+        data = resp.json()
+        if data.get("status") == "error" or "values" not in data:
+            log.warning("TwelveData intraday %s: %s", symbol, data.get("message", "no values"))
+            return None
+
+        values = list(reversed(data["values"]))  # oldest first
+        rows, timestamps = [], []
+        for v in values:
+            try:
+                rows.append({
+                    "Open":   float(v["open"]),
+                    "High":   float(v["high"]),
+                    "Low":    float(v["low"]),
+                    "Close":  float(v["close"]),
+                    "Volume": int(float(v.get("volume", 0))),
+                })
+                timestamps.append(v["datetime"])
+            except (KeyError, ValueError):
+                continue
+
+        if not rows:
+            return None
+
+        df = pd.DataFrame(rows, index=pd.to_datetime(timestamps))
+        df.index.name = "Date"
+        _td_record_call(1)
+        return df
+
+    except Exception as e:
+        log.warning("TwelveData intraday %s: %s", symbol, e)
+        return None
+
+
+def _yf_fetch_intraday(symbol: str) -> Optional[pd.DataFrame]:
+    """Fetch today's 1-minute bars from yfinance. Unofficial but free."""
+    try:
+        import yfinance as yf
+        df = yf.download(
+            tickers=symbol,
+            interval="1m",
+            period="1d",
+            auto_adjust=True,
+            progress=False,
+        )
+        if df.empty:
+            return None
+        df = _clean_yf_df(df)
+        return df if not df.empty else None
+    except Exception as e:
+        log.warning("yfinance intraday %s: %s", symbol, type(e).__name__)
+        return None
+
+
+def _db_get_intraday(symbol: str) -> Optional[pd.DataFrame]:
+    """Return cached 1-min DataFrame if fresher than _INTRADAY_TTL seconds."""
+    with _db_lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT data_json, fetched_at FROM ohlcv WHERE symbol=? AND period=? AND interval_=?",
+            (symbol, "intraday_1d", "1min")
+        ).fetchone()
+        conn.close()
+    if not row:
+        return None
+    if time.time() - row["fetched_at"] > _INTRADAY_TTL:
+        return None
+    try:
+        records = json.loads(row["data_json"])
+        df = pd.DataFrame(records)
+        df.index = pd.to_datetime(df.pop("_date"))
+        df.index.name = "Date"
+        return df
+    except Exception:
+        return None
+
+
+def _db_put_intraday(symbol: str, df: pd.DataFrame, source: str) -> None:
+    """Persist 1-min DataFrame to SQLite intraday slot."""
+    if df.empty:
+        return
+    records = df.copy()
+    records["_date"] = records.index.strftime("%Y-%m-%d %H:%M:%S")
+    data_json = json.dumps(records.to_dict(orient="records"))
+    with _db_lock:
+        conn = _get_conn()
+        conn.execute("""
+            INSERT OR REPLACE INTO ohlcv (symbol, period, interval_, data_json, source, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (symbol, "intraday_1d", "1min", data_json, source, time.time()))
+        conn.commit()
+        conn.close()
+
+
+def get_intraday_bars(symbol: str) -> tuple[pd.DataFrame, str]:
+    """
+    Fetch today's 1-minute OHLCV bars for `symbol`.
+
+    Returns (df, source) where source is "twelvedata", "yfinance", "cache", or "none".
+    df has columns Open/High/Low/Close/Volume with a datetime index (intraday timestamps).
+
+    Validation: returns empty DataFrame if fewer than 350 bars or critical NaN gaps exist.
+    Cache TTL = 60 seconds (re-fetches at most once per minute during market hours).
+    """
+    sym = symbol.upper()
+
+    # ── Cache hit ──
+    cached = _db_get_intraday(sym)
+    if cached is not None and not cached.empty:
+        return cached, "cache"
+
+    # ── Primary: TwelveData ──
+    df = _td_fetch_intraday(sym)
+    source = "twelvedata"
+
+    # ── Fallback: yfinance ──
+    if df is None or df.empty:
+        df = _yf_fetch_intraday(sym)
+        source = "yfinance"
+
+    if df is None or df.empty:
+        log.warning("get_intraday_bars %s: no data from any source", sym)
+        return pd.DataFrame(), "none"
+
+    # ── Validate ──
+    # Require at least as many bars as the market has been open, minus a small
+    # tolerance for data-provider lag.  A full session is 390 bars (9:30–4:00).
+    # We never require more than 60 — VWAP stabilises after ~60 bars and that
+    # is the de-facto ceiling for a "working" session.  Before 9:45 AM (the
+    # agent's earliest entry window) we require only 15 bars.
+    from datetime import datetime as _dt_cls
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        _et_tz = _ZI("America/New_York")
+    except ImportError:
+        import datetime as _dt_mod
+        _et_tz = timezone(_dt_mod.timedelta(hours=-4))
+    _now_et = _dt_cls.now(_et_tz)
+    # Minutes elapsed since market open (9:30 AM ET), clamped to [0, 390]
+    _minutes_open = max(0, (_now_et.hour - 9) * 60 + _now_et.minute - 30)
+    # Require 80% of elapsed bars (tolerance for provider lag), floor 15, cap 60
+    _min_bars = max(15, min(60, int(_minutes_open * 0.80)))
+    if len(df) < _min_bars:
+        log.warning("get_intraday_bars %s: only %d bars (need %d) — rejecting", sym, len(df), _min_bars)
+        return pd.DataFrame(), "none"
+
+    # Drop rows where Close is NaN (corrupted bars)
+    df = df[df["Close"].notna() & (df["Close"] > 0)]
+    df["Volume"] = df["Volume"].fillna(0).astype(int)
+
+    if df.empty:
+        return pd.DataFrame(), "none"
+
+    _db_put_intraday(sym, df, source)
+    log.info("get_intraday_bars %s: %d bars from %s", sym, len(df), source)
+    return df.copy(), source
+
+
 # ── Module startup: kick off background yfinance prefetch ─────────────────────
 _start_background_prefetch(period="1y")
