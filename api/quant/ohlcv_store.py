@@ -429,16 +429,18 @@ def _yf_batch_download(symbols: list[str], period: str, interval: str) -> dict[s
 def _yf_fetch(symbol: str, period: str, interval: str) -> Optional[pd.DataFrame]:
     """Single-symbol fetch — tries batch download first, falls back to Ticker.history."""
     result = _yf_batch_download([symbol], period, interval)
-    if result:
-        return result.get(symbol.upper())
+    df = result.get(symbol.upper()) if result else None
+    if df is not None and not df.empty:
+        return df
     # Fallback: direct Ticker (may rate-limit for heavy use)
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval)
-        if df.empty:
+        raw = ticker.history(period=period, interval=interval)
+        if raw is None or raw.empty:
             return None
-        return _clean_yf_df(df) or None
+        cleaned = _clean_yf_df(raw)
+        return cleaned if not cleaned.empty else None
     except Exception as e:
         log.warning("yfinance %s: %s", symbol, type(e).__name__)
         return None
