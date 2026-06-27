@@ -1299,5 +1299,6 @@ def get_intraday_bars(symbol: str) -> tuple[pd.DataFrame, str]:
     return df.copy(), source
 
 
-# ── Module startup: kick off background yfinance prefetch ─────────────────────
-_start_background_prefetch(period="1y")
+# Module startup prefetch intentionally removed.
+# Fetch on demand only — bulk downloads on startup exhaust Yahoo rate limits
+# before any user request arrives. SQLite caches each symbol after first fetch.
