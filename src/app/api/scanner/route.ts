@@ -10,12 +10,12 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(
       `${PYTHON_BASE}/api/scanner/quotes?universe=${universe}&limit=${limit}&sort=${sort}`,
-      { signal: AbortSignal.timeout(9_500) }
+      { signal: AbortSignal.timeout(9_500), cache: "no-store" }
     );
     const data = await res.json();
     return NextResponse.json(data, {
       status: res.status,
-      headers: { "Cache-Control": "s-maxage=120, stale-while-revalidate=600" },
+      headers: { "Cache-Control": "no-store" },
     });
   } catch (e: unknown) {
     return NextResponse.json(

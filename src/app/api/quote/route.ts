@@ -10,13 +10,13 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(
       `${PYTHON_BASE}/api/quote?symbol=${encodeURIComponent(symbol)}`,
-      { signal: AbortSignal.timeout(10_000) }
+      { signal: AbortSignal.timeout(10_000), cache: "no-store" }
     );
     const data = await res.json();
     return NextResponse.json(data, {
       headers: { "Cache-Control": "no-store" },
     });
   } catch {
-    return NextResponse.json({ price: 0, change_pct: 0 });
+    return NextResponse.json({ price: 0, change_pct: 0 }, { headers: { "Cache-Control": "no-store" } });
   }
 }

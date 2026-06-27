@@ -199,6 +199,14 @@ function AppInner() {
     setLoading(true); setError(null);
     try {
       const data = await api.analyze(sym, period);
+      // Final backstop: if the server somehow returned zeros despite all server-side guards,
+      // treat it as still-computing and retry rather than displaying broken output.
+      if (data.composite_signal === 0 && data.composite_confidence === 0 && (!data.signals || data.signals.length === 0)) {
+        if (attempt < 4) {
+          setTimeout(() => fetchAnalysis(sym, period, attempt + 1), 3000);
+          return;
+        }
+      }
       setAnalysis(data);
       const src = data.data_source ?? "Yahoo Finance";
       setDataSourceBadge(src);

@@ -393,7 +393,7 @@ def _yf_batch_download(symbols: list[str], period: str, interval: str) -> dict[s
             group_by="ticker",
             auto_adjust=True,
             progress=False,
-            threads=True,
+            threads=False,
         )
         if raw.empty:
             return {}
@@ -446,12 +446,195 @@ def _yf_fetch(symbol: str, period: str, interval: str) -> Optional[pd.DataFrame]
         return None
 
 
+# ── Yahoo Finance chart v8 JSON fetcher ──────────────────────────────────────
+# query1 and query2 are separate Yahoo servers with independent rate-limit buckets.
+# We round-robin between them so sustained load is spread across both.
+# No crumb/cookie required — just a browser User-Agent.
+
+_YF_CHART_HOSTS = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]
+_yf_chart_host_idx = 0
+_yf_chart_lock = threading.Lock()
+_YF_CHART_UAS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+]
+
+
+def _yf_chart_fetch(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
+    """
+    Fetch daily OHLCV via Yahoo Finance chart v8 JSON endpoint.
+    Round-robins between query1 and query2 — completely separate rate-limit
+    buckets from the yfinance library and from each other.
+    Returns cleaned DataFrame or None.
+    """
+    global _yf_chart_host_idx
+    try:
+        import io as _io
+        with _yf_chart_lock:
+            host = _YF_CHART_HOSTS[_yf_chart_host_idx % len(_YF_CHART_HOSTS)]
+            _yf_chart_host_idx += 1
+            ua = _YF_CHART_UAS[_yf_chart_host_idx % len(_YF_CHART_UAS)]
+
+        # Map period string to Yahoo range param
+        yf_range = {
+            "1mo": "1mo", "3mo": "3mo", "6mo": "6mo",
+            "1y": "1y", "2y": "2y", "5y": "5y",
+        }.get(period, "1y")
+
+        resp = requests.get(
+            f"https://{host}/v8/finance/chart/{symbol}",
+            params={"interval": "1d", "range": yf_range},
+            headers={"User-Agent": ua, "Accept": "application/json"},
+            timeout=12,
+        )
+        if resp.status_code != 200:
+            log.debug("yf_chart_v8 %s %s HTTP %s", host, symbol, resp.status_code)
+            return None
+
+        data = resp.json()
+        result = data.get("chart", {}).get("result", [])
+        if not result:
+            return None
+
+        r = result[0]
+        timestamps = r.get("timestamp", [])
+        quote = r.get("indicators", {}).get("quote", [{}])[0]
+        adjclose_list = r.get("indicators", {}).get("adjclose", [{}])
+        adjclose = adjclose_list[0].get("adjclose", []) if adjclose_list else []
+
+        if not timestamps or not quote.get("close"):
+            return None
+
+        closes = adjclose if adjclose else quote["close"]
+        rows = []
+        dates = []
+        for i, ts in enumerate(timestamps):
+            try:
+                o = quote["open"][i]
+                h = quote["high"][i]
+                l = quote["low"][i]
+                c = closes[i]
+                v = quote["volume"][i]
+                if c is None or o is None:
+                    continue
+                rows.append({"Open": float(o), "High": float(h or c), "Low": float(l or c),
+                             "Close": float(c), "Volume": int(v or 0)})
+                dates.append(pd.Timestamp(ts, unit="s", tz="UTC").tz_localize(None).normalize())
+            except (IndexError, TypeError):
+                continue
+
+        if not rows:
+            return None
+
+        df = pd.DataFrame(rows, index=pd.DatetimeIndex(dates))
+        df.index.name = "Date"
+        df = df[df["Close"] > 0].dropna(subset=["Close"])
+        return df if not df.empty else None
+
+    except Exception as e:
+        log.debug("yf_chart_v8 %s: %s", symbol, type(e).__name__)
+        return None
+
+
+def _yf_spark_quotes(symbols: list[str]) -> dict[str, dict]:
+    """
+    Fetch real-time quotes for multiple symbols via Yahoo Finance spark endpoint.
+    Returns up to 5 days of bars per symbol — we use only the last two for price/change.
+    Completely separate rate-limit bucket from yf.download and yf_chart_v8.
+    """
+    if not symbols:
+        return {}
+    try:
+        resp = requests.get(
+            "https://query1.finance.yahoo.com/v7/finance/spark",
+            params={
+                "symbols": ",".join(symbols),
+                "range": "5d",
+                "interval": "1d",
+            },
+            headers={
+                "User-Agent": _YF_CHART_UAS[0],
+                "Accept": "application/json",
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return {}
+
+        out: dict[str, dict] = {}
+        ts_now = time.time()
+        for s in resp.json().get("spark", {}).get("result", []):
+            sym = s.get("symbol", "").upper()
+            if not sym:
+                continue
+            try:
+                resp_data = s.get("response", [{}])[0]
+                q = resp_data.get("indicators", {}).get("quote", [{}])[0]
+                closes = [c for c in q.get("close", []) if c is not None]
+                vols   = [v for v in q.get("volume", []) if v is not None]
+                if len(closes) < 1:
+                    continue
+                price = round(float(closes[-1]), 2)
+                prev  = round(float(closes[-2]), 2) if len(closes) >= 2 else price
+                vol   = int(vols[-1]) if vols else 0
+                chg   = round(((price / prev) - 1) * 100, 3) if prev else 0.0
+                out[sym] = {"symbol": sym, "price": price, "change_pct": chg,
+                            "volume": vol, "market_cap": 0, "ts": ts_now}
+            except Exception:
+                continue
+        return out
+    except Exception as e:
+        log.debug("yf_spark_quotes: %s", type(e).__name__)
+        return {}
+
+
+_yf_csv_session: "requests.Session | None" = None
+_yf_csv_crumb: str = ""
+_yf_csv_lock = threading.Lock()
+
+
+def _reset_yf_csv_session() -> None:
+    global _yf_csv_session, _yf_csv_crumb
+    with _yf_csv_lock:
+        _yf_csv_session = None
+        _yf_csv_crumb = ""
+
+
+def _get_yf_csv_session() -> "tuple[requests.Session, str]":
+    """Return (session, crumb) for Yahoo Finance CSV endpoint, refreshing as needed."""
+    global _yf_csv_session, _yf_csv_crumb
+    with _yf_csv_lock:
+        if _yf_csv_session is not None and _yf_csv_crumb:
+            return _yf_csv_session, _yf_csv_crumb
+        sess = requests.Session()
+        sess.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        # Fetch crumb from Yahoo Finance consent page
+        try:
+            r = sess.get("https://finance.yahoo.com/quote/AAPL", timeout=10)
+            import re
+            m = re.search(r'"crumb":"([^"]+)"', r.text)
+            crumb = m.group(1) if m else ""
+        except Exception:
+            crumb = ""
+        _yf_csv_session = sess
+        _yf_csv_crumb = crumb
+        return sess, crumb
+
+
 def _yf_csv_fetch(symbol: str, period: str) -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV by hitting Yahoo Finance's CSV download endpoint directly with
-    a browser User-Agent. This is a separate HTTP session from the yfinance
-    library — it uses different cookies/headers and doesn't share the rate-limit
-    bucket that throttles per-library sessions.
+    Fetch OHLCV via Yahoo Finance CSV download with a persistent browser session.
+    Uses a shared session+crumb so cookies carry over — this is a completely
+    separate rate-limit bucket from the yfinance library.
     """
     try:
         import io
@@ -460,20 +643,33 @@ def _yf_csv_fetch(symbol: str, period: str) -> Optional[pd.DataFrame]:
         days = int(_period_to_outputsize(period) * 1.6)  # buffer for weekends
         start_ts = now_ts - days * 86400
 
-        url = (
-            f"https://query1.finance.yahoo.com/v7/finance/download/{symbol}"
-            f"?period1={start_ts}&period2={now_ts}&interval=1d"
-            f"&events=history&includeAdjustedClose=true"
-        )
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        sess, crumb = _get_yf_csv_session()
+        params = {
+            "period1": start_ts,
+            "period2": now_ts,
+            "interval": "1d",
+            "events": "history",
+            "includeAdjustedClose": "true",
         }
-        resp = requests.get(url, headers=headers, timeout=12)
+        if crumb:
+            params["crumb"] = crumb
+
+        resp = sess.get(
+            f"https://query1.finance.yahoo.com/v7/finance/download/{symbol}",
+            params=params,
+            timeout=12,
+        )
+        if resp.status_code == 401:
+            # Crumb expired — invalidate and retry once
+            _reset_yf_csv_session()
+            sess, crumb = _get_yf_csv_session()
+            if crumb:
+                params["crumb"] = crumb
+            resp = sess.get(
+                f"https://query1.finance.yahoo.com/v7/finance/download/{symbol}",
+                params=params,
+                timeout=12,
+            )
         if resp.status_code != 200:
             log.debug("yf_csv %s HTTP %s", symbol, resp.status_code)
             return None
@@ -482,10 +678,14 @@ def _yf_csv_fetch(symbol: str, period: str) -> Optional[pd.DataFrame]:
         if df.empty or "Close" not in df.columns:
             return None
 
-        df = df.rename(columns={"Adj Close": "Close"}) if "Adj Close" in df.columns and "Close" not in df.columns else df
+        if "Adj Close" in df.columns and "Close" not in df.columns:
+            df = df.rename(columns={"Adj Close": "Close"})
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.set_index("Date")
-        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        if "Close" not in keep:
+            return None
+        df = df[keep].copy()
         df = df[df["Close"] > 0].dropna(subset=["Close"])
         df.index.name = "Date"
         return df if not df.empty else None
@@ -656,60 +856,130 @@ _hot_lock = threading.Lock()
 _HOT_TTL = 600  # 10 minutes — must outlive the Render prewarm window
 
 
+_PERIOD_BARS: dict[str, int] = {
+    "1d": 1, "5d": 5, "1mo": 21, "3mo": 63, "6mo": 126,
+    "1y": 252, "2y": 504, "5y": 1260, "10y": 2520,
+}
+# Periods that can serve as superset for a requested shorter period
+_PERIOD_FALLBACK_ORDER = ["10y", "5y", "2y", "1y", "6mo", "3mo", "1mo", "5d"]
+
+
+def _db_get_with_fallback(symbol: str, period: str, interval: str) -> Optional[tuple[pd.DataFrame, str]]:
+    """
+    Like _db_get, but if the exact period misses, try longer cached periods and
+    slice them down to the requested window. This lets a "1mo" request be served
+    from the "1y" bg_refresh data without a separate download.
+    """
+    # Exact match first
+    result = _db_get(symbol, period, interval)
+    if result is not None:
+        return result
+
+    requested_bars = _PERIOD_BARS.get(period, 252)
+    for fallback_period in _PERIOD_FALLBACK_ORDER:
+        if fallback_period == period:
+            continue
+        fallback_bars = _PERIOD_BARS.get(fallback_period, 0)
+        if fallback_bars <= requested_bars:
+            continue  # shorter period can't serve a longer request
+        cached = _db_get(symbol, fallback_period, interval)
+        if cached is not None:
+            df, source = cached
+            # Slice to approximately the requested number of bars
+            if len(df) > requested_bars:
+                df = df.iloc[-requested_bars:]
+            log.debug("Period fallback %s: served %s from %s cache", symbol, period, fallback_period)
+            return df, source
+    return None
+
+
 def fetch(symbol: str, period: str = "1y", interval: str = "1d") -> tuple[pd.DataFrame, str]:
     """
-    Fetch OHLCV with a four-tier hierarchy:
-      1. In-memory hot cache (60s TTL)
-      2. SQLite persistent cache (6h TTL)
-      3. yfinance batch download (all SP500 in one HTTP call) → stored in SQLite
-      4. TwelveData bulk fetch (ALL SP500) → stored in SQLite
-         ONLY if: yfinance is rate-limited AND TD cooldown has elapsed
+    Fetch OHLCV with a five-tier hierarchy:
+      1. In-memory hot cache (10 min TTL)
+      2. SQLite persistent cache with period fallback — a "1mo" request served
+         from "1y" bg_refresh data avoids a live API call entirely
+      3. Yahoo Finance CSV endpoint (browser User-Agent, separate rate-limit bucket)
+      4. yfinance library (may share Yahoo rate-limit bucket)
+      5. Alpha Vantage (20 calls/day hard cap)
+      6. TwelveData (200 credits/day cap, well under 800 free-tier limit)
 
     Returns (DataFrame, source).
     """
     sym = symbol.upper()
     hot_key = f"{sym}|{period}|{interval}"
 
+    # Minimum bars the engine needs to produce a real signal.
+    # feature_eng.compute() uses a 40-bar rolling Hurst window — after dropna()
+    # the features DataFrame is empty for any input with fewer than ~41 bars.
+    # 50 gives safe headroom above that threshold.
+    _MIN_BARS = 50
+
     # ── Tier 1: hot memory cache ──
     with _hot_lock:
         entry = _hot_cache.get(hot_key)
         if entry and (time.time() - entry[2]) < _HOT_TTL:
-            return entry[0].copy(), "memory_cache"
+            cached_df = entry[0]
+            if len(cached_df) >= _MIN_BARS:
+                return cached_df.copy(), "memory_cache"
+            # Too short — evict and fall through to live fetch
+            del _hot_cache[hot_key]
 
-    # ── Tier 2: SQLite persistent cache ──
-    cached = _db_get(sym, period, interval)
+    # ── Tier 2: SQLite with period fallback ──
+    # Critical: bg_refresh stores data under "1y". Requests for "1mo", "6mo", etc.
+    # are sliced from the 1y data — no live API call needed for cached symbols.
+    cached = _db_get_with_fallback(sym, period, interval)
     if cached is not None:
         df, source = cached
-        with _hot_lock:
-            _hot_cache[hot_key] = (df, source, time.time())
-        return df.copy(), f"sqlite_{source}"
+        if len(df) >= _MIN_BARS:
+            with _hot_lock:
+                _hot_cache[hot_key] = (df, source, time.time())
+            return df.copy(), f"sqlite_{source}"
+        # Too few bars — fall through to live fetch; don't cache this stub
 
-    # ── Tier 3: single-symbol yfinance download ──
-    # We do NOT do a 100-symbol batch here — that belongs in the dedicated
-    # background prefetch only. Doing a batch per request causes 8 concurrent
-    # requests (daytrade-picks executor) to each wait on _yf_batch_lock while
-    # the previous 100-symbol download finishes, totalling minutes of wait.
-    df = _yf_fetch(sym, period, interval)
+    # ── Tier 3: Yahoo Finance chart v8 JSON (query1 + query2 round-robin) ──
+    # Two independent Yahoo servers, no crumb/session needed, works on all symbols.
+    # Always fetches 1y so all shorter-period requests are served from SQLite fallback next time.
+    if interval == "1d":
+        df = _yf_chart_fetch(sym, "1y")
+        if df is not None and not df.empty:
+            _db_put(sym, "1y", interval, df, "yfinance")
+            with _hot_lock:
+                _hot_cache[hot_key] = (df, "yfinance", time.time())
+            bars = _PERIOD_BARS.get(period, 252)
+            return (df.iloc[-bars:].copy() if len(df) > bars else df.copy()), "yfinance"
+
+    # ── Tier 4: Yahoo Finance CSV endpoint (browser session + crumb) ──
+    # Third Yahoo bucket — different endpoint, different cookie jar from chart v8.
+    if interval == "1d":
+        df = _yf_csv_fetch(sym, "1y")
+        if df is not None and not df.empty:
+            _db_put(sym, "1y", interval, df, "yfinance")
+            with _hot_lock:
+                _hot_cache[hot_key] = (df, "yfinance", time.time())
+            bars = _PERIOD_BARS.get(period, 252)
+            return (df.iloc[-bars:].copy() if len(df) > bars else df.copy()), "yfinance"
+
+    # ── Tier 5: yfinance library (query2, shared session) ──
+    df = _yf_fetch(sym, "1y", interval)
     if df is not None and not df.empty:
-        _db_put(sym, period, interval, df, "yfinance")
+        _db_put(sym, "1y", interval, df, "yfinance")
         with _hot_lock:
             _hot_cache[hot_key] = (df, "yfinance", time.time())
-        return df.copy(), "yfinance"
+        bars = _PERIOD_BARS.get(period, 252)
+        return (df.iloc[-bars:].copy() if len(df) > bars else df.copy()), "yfinance"
 
-    # ── Tier 3.5: Alpha Vantage (rate-limited: 20 calls/day, 1 per 15s) ──────
+    # ── Tier 5: Alpha Vantage (rate-limited: 20 calls/day, 1 per 15s) ──
     if interval == "1d" and _AV_API_KEY:
         df = _av_fetch(sym, period)
         if df is not None and not df.empty:
-            _db_put(sym, period, interval, df, "alphavantage")
+            _db_put(sym, "1y", interval, df, "alphavantage")
             with _hot_lock:
                 _hot_cache[hot_key] = (df, "alphavantage", time.time())
             log.info("AlphaVantage hit for %s", sym)
             return df.copy(), "alphavantage"
 
-    # ── Tier 4: TwelveData single-symbol fallback ──
-    # NEVER do bulk SP500 sweeps here — that blows through 800 credits instantly.
-    # Only fetch the one requested symbol (1 credit), and only if the daily
-    # budget has not been exhausted (we cap at 200 single-symbol calls/day).
+    # ── Tier 6: TwelveData single-symbol fallback ──
     if interval == "1d" and _TD_API_KEY:
         today = datetime.utcnow().strftime("%Y-%m-%d")
         with _db_lock:
@@ -717,17 +987,17 @@ def fetch(symbol: str, period: str = "1y", interval: str = "1d") -> tuple[pd.Dat
             row = conn.execute("SELECT calls_today, call_date FROM td_state WHERE id=1").fetchone()
             conn.close()
         calls_today = (row["calls_today"] if row and row["call_date"] == today else 0) if row else 0
-        _TD_SINGLE_DAY_CAP = 200  # well under 800 credit limit
+        _TD_SINGLE_DAY_CAP = 200
         if calls_today < _TD_SINGLE_DAY_CAP:
-            outputsize = _period_to_outputsize(period)
-            df = _td_fetch_one(sym, outputsize)
+            df = _td_fetch_one(sym, 252)  # always 1y
             if df is not None and not df.empty:
                 _td_record_call(1)
-                _db_put(sym, period, interval, df, "twelvedata")
+                _db_put(sym, "1y", interval, df, "twelvedata")
                 with _hot_lock:
                     _hot_cache[hot_key] = (df, "twelvedata", time.time())
                 log.info("TwelveData single-symbol hit for %s (%d credits used today)", sym, calls_today + 1)
-                return df.copy(), "twelvedata"
+                bars = _PERIOD_BARS.get(period, 252)
+                return (df.iloc[-bars:].copy() if len(df) > bars else df.copy()), "twelvedata"
         else:
             log.info("TwelveData daily cap reached (%d/%d) — skipping %s", calls_today, _TD_SINGLE_DAY_CAP, sym)
 
@@ -755,55 +1025,90 @@ def td_bulk_sweep_now(period: str = "1y", force: bool = False) -> dict:
 
 def fetch_quote_with_source(symbol: str) -> tuple[dict, str]:
     """
-    Live quote. yfinance primary, OHLCV SQLite cache fallback.
-    TwelveData is NEVER called here — quotes use yfinance fast_info or SQLite cache only.
+    Live quote. Priority:
+      1. yfinance fast_info
+      2. Finnhub /quote (real-time, free tier)
+      3. SQLite OHLCV cache (last two rows)
     Returns (quote_dict, source).
     """
     sym = symbol.upper()
-    source = "yfinance"
     result: dict = {"symbol": sym, "price": 0, "change_pct": 0, "volume": 0, "market_cap": 0}
 
+    # ── 1. Yahoo spark (multi-symbol batch endpoint, separate bucket from yf library) ──
+    try:
+        spark = _yf_spark_quotes([sym])
+        q = spark.get(sym)
+        if q and q.get("price", 0) > 0:
+            return {
+                "symbol":     sym,
+                "price":      round(q["price"], 4),
+                "prev_close": round(q["price"] / (1 + q["change_pct"] / 100), 4) if q["change_pct"] else q["price"],
+                "change_pct": q["change_pct"],
+                "volume":     q.get("volume", 0),
+                "market_cap": 0,
+            }, "yfinance"
+    except Exception:
+        pass
+
+    # ── 2. yfinance fast_info (fallback — shares rate-limit bucket with library) ──
     try:
         import yfinance as yf
         info = yf.Ticker(sym).fast_info
         price = float(info.last_price or 0)
         prev  = float(info.previous_close or price)
         if price > 0:
-            result = {
+            return {
                 "symbol":     sym,
                 "price":      round(price, 4),
                 "prev_close": round(prev, 4),
                 "change_pct": round((price / max(prev, 1e-8) - 1) * 100, 3),
                 "volume":     int(info.three_month_average_volume or 0),
                 "market_cap": float(getattr(info, "market_cap", 0) or 0),
-            }
-            return result, source
+            }, "yfinance"
     except Exception:
         pass
 
-    # Last-resort: derive quote from cached OHLCV (last two rows)
+    # ── 3. Finnhub /quote (independent API, real-time, 60/min free) ──
+    try:
+        from api.quant.finnhub_client import get_quote as _fh_quote
+        fq = _fh_quote(sym)
+        if fq and fq.get("price", 0) > 0:
+            return {
+                "symbol":     sym,
+                "price":      fq["price"],
+                "prev_close": fq.get("prev_close", fq["price"]),
+                "change_pct": fq.get("change_pct", 0),
+                "high":       fq.get("high", 0),
+                "low":        fq.get("low", 0),
+                "volume":     0,
+                "market_cap": 0,
+            }, "finnhub"
+    except Exception:
+        pass
+
+    # ── 4. SQLite OHLCV last two rows ──
     cached = _db_get(sym, "1y", "1d") or _db_get(sym, "6mo", "1d")
     if cached is not None:
         df, ohlcv_source = cached
         if len(df) >= 2:
             price = float(df["Close"].iloc[-1])
             prev  = float(df["Close"].iloc[-2])
-            result = {
+            return {
                 "symbol":     sym,
                 "price":      round(price, 4),
                 "prev_close": round(prev, 4),
                 "change_pct": round((price / max(prev, 1e-8) - 1) * 100, 3),
                 "volume":     int(df["Volume"].iloc[-1]),
                 "market_cap": 0,
-            }
-            source = f"sqlite_{ohlcv_source}"
+            }, f"sqlite_{ohlcv_source}"
         elif len(df) == 1:
             price = float(df["Close"].iloc[-1])
-            result = {"symbol": sym, "price": round(price, 4), "prev_close": round(price, 4),
-                      "change_pct": 0.0, "volume": int(df["Volume"].iloc[-1]), "market_cap": 0}
-            source = f"sqlite_{ohlcv_source}"
+            return {
+                "symbol": sym, "price": round(price, 4), "prev_close": round(price, 4),
+                "change_pct": 0.0, "volume": int(df["Volume"].iloc[-1]), "market_cap": 0,
+            }, f"sqlite_{ohlcv_source}"
 
-    return result, source
+    return result, "none"
 
 
 # ── Intraday (1-minute) bar fetch ────────────────────────────────────────────

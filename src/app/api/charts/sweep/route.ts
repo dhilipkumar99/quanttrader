@@ -7,11 +7,11 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(
       `${PYTHON_BASE}/api/charts/sweep?force=${force}`,
-      { signal: AbortSignal.timeout(15_000) }
+      { signal: AbortSignal.timeout(15_000), cache: "no-store" }
     );
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    return NextResponse.json(data, { status: res.status, headers: { "Cache-Control": "no-store" } });
   } catch (e: unknown) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    return NextResponse.json({ error: String(e) }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }

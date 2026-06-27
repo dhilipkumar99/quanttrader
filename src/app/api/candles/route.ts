@@ -9,12 +9,12 @@ export async function GET(req: NextRequest) {
 
   // Single request with 8.5s timeout — fits inside Vercel's 10s hard kill with margin.
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8_500) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_500), cache: "no-store" });
     const data = await res.json();
     if (res.ok) {
       return NextResponse.json(data, {
         status: 200,
-        headers: { "Cache-Control": "s-maxage=300, stale-while-revalidate=3600" },
+        headers: { "Cache-Control": "no-store" },
       });
     }
     return NextResponse.json(data, {

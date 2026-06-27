@@ -38,71 +38,85 @@ _refresh_running = False  # prevent concurrent refreshes
 
 def _batch_fetch_quotes(symbols: list[str]) -> dict[str, dict]:
     """
-    Download quotes for up to 500 symbols via yf.download() (single HTTP call),
-    falling back to the OHLCV SQLite cache for symbols that fail.
-    Avoids fast_info / per-ticker calls that trip Yahoo's rate limiter.
+    Multi-tier quote fetch: spark → yf.download → SQLite.
+    Spark (query1.finance.yahoo.com/v7/finance/spark) is a separate rate-limit
+    bucket from the yfinance library, so it doesn't collide with bg_refresh.
     """
     if not symbols:
         return {}
 
     out: dict[str, dict] = {}
+    ts_now = time.time()
 
-    # ── Primary: yf.download() — one HTTP call, 2-day window for price + volume ──
+    # ── Tier 1: Yahoo spark endpoint (separate bucket, handles 100+ symbols in one call) ──
     try:
-        raw = yf.download(
-            tickers=symbols,
-            period="5d",
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-        )
-        ts_now = time.time()
-        if not raw.empty:
-            single = len(symbols) == 1
-            for sym in symbols:
-                try:
-                    if single:
-                        df = raw.copy()
-                        if isinstance(df.columns, pd.MultiIndex):
-                            df.columns = df.columns.get_level_values(0)
-                    else:
-                        sym_u = sym.upper()
-                        if sym_u not in raw.columns.get_level_values(0):
-                            continue
-                        df = raw[sym_u].dropna(how="all")
-
-                    if df.empty:
-                        continue
-                    df = df.dropna(subset=["Close"])
-                    if len(df) < 2:
-                        continue
-
-                    price = float(df["Close"].iloc[-1])
-                    prev  = float(df["Close"].iloc[-2])
-                    vol   = int(df["Volume"].iloc[-1]) if "Volume" in df.columns else 0
-                    chg_pct = round(((price / prev) - 1) * 100, 3) if prev else 0.0
-                    # Approximate market cap: not available from download; omit (0)
-                    out[sym] = {
-                        "symbol":     sym,
-                        "price":      round(price, 2),
-                        "change_pct": chg_pct,
-                        "volume":     vol,
-                        "market_cap": 0,
-                        "ts":         ts_now,
-                    }
-                except Exception:
-                    continue
+        from api.quant.ohlcv_store import _yf_spark_quotes
+        spark = _yf_spark_quotes(symbols)
+        for sym, q in spark.items():
+            if q.get("price", 0) > 0:
+                out[sym] = {
+                    "symbol":     sym,
+                    "price":      round(q["price"], 2),
+                    "change_pct": q.get("change_pct", 0),
+                    "volume":     q.get("volume", 0),
+                    "market_cap": 0,
+                    "ts":         ts_now,
+                }
     except Exception:
-        pass  # fall through to SQLite cache
+        pass
 
-    # ── Fallback: pull last bar from OHLCV SQLite cache for any misses ──
+    # ── Tier 2: yf.download() for any misses ──
+    missed = [s for s in symbols if s not in out]
+    if missed:
+        try:
+            raw = yf.download(
+                tickers=missed,
+                period="5d",
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+            if not raw.empty:
+                single = len(missed) == 1
+                for sym in missed:
+                    try:
+                        if single:
+                            df = raw.copy()
+                            if isinstance(df.columns, pd.MultiIndex):
+                                df.columns = df.columns.get_level_values(0)
+                        else:
+                            sym_u = sym.upper()
+                            if sym_u not in raw.columns.get_level_values(0):
+                                continue
+                            df = raw[sym_u].dropna(how="all")
+                        if df.empty:
+                            continue
+                        df = df.dropna(subset=["Close"])
+                        if len(df) < 2:
+                            continue
+                        price = float(df["Close"].iloc[-1])
+                        prev  = float(df["Close"].iloc[-2])
+                        vol   = int(df["Volume"].iloc[-1]) if "Volume" in df.columns else 0
+                        out[sym] = {
+                            "symbol":     sym,
+                            "price":      round(price, 2),
+                            "change_pct": round(((price / prev) - 1) * 100, 3) if prev else 0.0,
+                            "volume":     vol,
+                            "market_cap": 0,
+                            "ts":         ts_now,
+                        }
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    # ── Tier 3: SQLite OHLCV cache for remaining misses ──
     missed = [s for s in symbols if s not in out]
     if missed:
         try:
             from api.quant.ohlcv_store import _db_get
-            ts_now = time.time()
             for sym in missed:
                 try:
                     cached = _db_get(sym, "6mo", "1d") or _db_get(sym, "1y", "1d")
@@ -115,11 +129,10 @@ def _batch_fetch_quotes(symbols: list[str]) -> dict[str, dict]:
                     price = float(df["Close"].iloc[-1])
                     prev  = float(df["Close"].iloc[-2])
                     vol   = int(df["Volume"].iloc[-1]) if "Volume" in df.columns else 0
-                    chg_pct = round(((price / prev) - 1) * 100, 3) if prev else 0.0
                     out[sym] = {
                         "symbol":     sym,
                         "price":      round(price, 2),
-                        "change_pct": chg_pct,
+                        "change_pct": round(((price / prev) - 1) * 100, 3) if prev else 0.0,
                         "volume":     vol,
                         "market_cap": 0,
                         "ts":         ts_now,

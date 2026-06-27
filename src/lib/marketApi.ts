@@ -9,7 +9,7 @@ async function get<T>(path: string, timeoutMs = 15_000): Promise<T> {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${BASE}${path}`, { signal: ctrl.signal });
+    const res = await fetch(`${BASE}${path}`, { signal: ctrl.signal, cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json() as Promise<T>;
   } finally {
@@ -38,7 +38,7 @@ async function del<T>(path: string, timeoutMs = 10_000): Promise<T> {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${BASE}${path}`, { method: "DELETE", signal: ctrl.signal });
+    const res = await fetch(`${BASE}${path}`, { method: "DELETE", signal: ctrl.signal, cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json() as Promise<T>;
   } finally {

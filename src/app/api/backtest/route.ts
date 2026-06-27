@@ -10,12 +10,12 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(
       `${PYTHON_BASE}/api/backtest?symbol=${encodeURIComponent(symbol)}&period=${period}&cash=${cash}`,
-      { signal: AbortSignal.timeout(9_500) }
+      { signal: AbortSignal.timeout(9_500), cache: "no-store" }
     );
     const data = await res.json();
     return NextResponse.json(data, {
       status: res.status,
-      headers: { "Cache-Control": "s-maxage=600, stale-while-revalidate=7200" },
+      headers: { "Cache-Control": "no-store" },
     });
   } catch (e: unknown) {
     const msg = (e as Error)?.name === "TimeoutError" ? "timeout" : String(e);

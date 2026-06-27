@@ -7,6 +7,7 @@ export async function GET(req: NextRequest) {
   const upstream = await fetch(`${PYTHON_BASE}/api/agent/stream`, {
     signal: req.signal,
     headers: { Accept: "text/event-stream" },
+    cache: "no-store",
   });
 
   return new Response(upstream.body, {

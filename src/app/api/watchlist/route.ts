@@ -11,10 +11,10 @@ export async function GET(req: NextRequest) {
     const url = symbols
       ? `${PYTHON_BASE}/api/watchlist?symbols=${encodeURIComponent(symbols)}`
       : `${PYTHON_BASE}/api/watchlist`;
-    const res  = await fetch(url, { signal: AbortSignal.timeout(9_500) });
+    const res  = await fetch(url, { signal: AbortSignal.timeout(9_500), cache: "no-store" });
     const data = await res.json();
     return NextResponse.json(data, {
-      headers: { "Cache-Control": "s-maxage=60, stale-while-revalidate=300" },
+      headers: { "Cache-Control": "no-store" },
     });
   } catch (e: unknown) {
     const msg = (e as Error)?.name === "TimeoutError" ? "timeout" : String(e);

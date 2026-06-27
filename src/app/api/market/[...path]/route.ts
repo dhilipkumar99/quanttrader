@@ -6,11 +6,11 @@ export async function GET(req: NextRequest, ctx: RouteContext<"/api/market/[...p
   const { path } = await ctx.params;
   const url = `${PYTHON_BASE}/api/market/${path.join("/")}${req.nextUrl.search}`;
   try {
-    const res  = await fetch(url, { signal: AbortSignal.timeout(9_500) });
+    const res  = await fetch(url, { signal: AbortSignal.timeout(9_500), cache: "no-store" });
     const data = await res.json();
     return NextResponse.json(data, {
       status: res.status,
-      headers: { "Cache-Control": "s-maxage=120, stale-while-revalidate=600" },
+      headers: { "Cache-Control": "no-store" },
     });
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500, headers: { "Cache-Control": "no-store" } });

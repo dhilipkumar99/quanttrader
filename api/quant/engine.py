@@ -667,7 +667,7 @@ class QuantEngine:
 
     def analyze(self, df: pd.DataFrame, symbol: str = "UNKNOWN",
                 horizon: str = DEFAULT_HORIZON) -> QuantResult:
-        if df.empty or len(df) < 30:
+        if df.empty or len(df) < 50:
             return self._empty_result(symbol, horizon)
 
         # 1. Feature engineering

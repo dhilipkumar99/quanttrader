@@ -349,7 +349,7 @@ class AgentLoop:
         for sym in self._state.config.symbols:
             try:
                 df = fetch(sym, period="6mo", interval="1d")
-                if df.empty:
+                if df.empty or len(df) < 50:
                     continue
                 r = engine.analyze(df, sym)
                 q = fetch_quote(sym)
@@ -648,7 +648,7 @@ class AgentLoop:
         for sym in cfg.symbols:
             try:
                 df = fetch(sym, period=_horizon_period, interval="1d")
-                if df.empty:
+                if df.empty or len(df) < 50:
                     continue
                 r  = engine.analyze(df, sym, horizon=cfg.horizon)
                 q  = fetch_quote(sym)

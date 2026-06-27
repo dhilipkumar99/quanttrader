@@ -202,7 +202,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
+    const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
     return res;
   } finally {
     clearTimeout(id);
@@ -254,7 +254,7 @@ export async function wakeRender(timeoutMs = 300_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${BASE}/api/wake`, { signal: AbortSignal.timeout(9_000) });
+      const res = await fetch(`${BASE}/api/wake`, { signal: AbortSignal.timeout(9_000), cache: "no-store" });
       // Only parse JSON when content-type is application/json (not Vercel HTML error pages)
       const ct = res.headers.get("content-type") ?? "";
       if (ct.includes("application/json")) {

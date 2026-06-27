@@ -134,7 +134,7 @@ def _yf_batch_fetch(symbols: list[str]) -> dict[str, list[dict]]:
             group_by="ticker",
             auto_adjust=True,
             progress=False,
-            threads=True,
+            threads=False,
         )
         if raw.empty:
             return {}

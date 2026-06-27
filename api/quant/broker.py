@@ -372,7 +372,7 @@ def get_market_movers(limit: int = 10) -> dict:
             group_by="ticker",
             auto_adjust=True,
             progress=False,
-            threads=True,
+            threads=False,
         )
 
         for sym in UNIVERSE:

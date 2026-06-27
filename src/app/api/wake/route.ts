@@ -12,10 +12,11 @@ export async function GET() {
   try {
     const res = await fetch(`${PYTHON_BASE}/health`, {
       signal: AbortSignal.timeout(55_000),
+      cache: "no-store",
     });
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    return NextResponse.json(data, { status: res.status, headers: { "Cache-Control": "no-store" } });
   } catch {
-    return NextResponse.json({ status: "sleeping" }, { status: 503 });
+    return NextResponse.json({ status: "sleeping" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 }

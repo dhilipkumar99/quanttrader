@@ -8,11 +8,11 @@ export async function POST(req: NextRequest) {
   try {
     const res = await fetch(
       `${PYTHON_BASE}/api/data-source/sweep?force=${force}&period=${period}`,
-      { method: "POST", signal: AbortSignal.timeout(10_000) }
+      { method: "POST", signal: AbortSignal.timeout(10_000), cache: "no-store" }
     );
     const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    return NextResponse.json(data, { status: res.status, headers: { "Cache-Control": "no-store" } });
   } catch (e: unknown) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    return NextResponse.json({ error: String(e) }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }

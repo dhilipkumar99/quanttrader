@@ -43,6 +43,7 @@ from api.quant.charts_db import (
     get_chart, get_charts_batch, get_sweep_status, run_sweep, sweep_is_stale, ensure_chart
 )
 from api.quant.ohlcv_store import _clean_yf_df, _db_put_many
+from api.quant import finnhub_client as _fh
 
 app = FastAPI(title="QuantTrader API")
 
@@ -70,6 +71,19 @@ _compute_events: dict[str, "_threading.Event"] = {}  # shared events for concurr
 # Sentinel stored in _server_cache when a symbol genuinely has no data
 # (invalid ticker, delisted, etc.) so we return 404 instead of 503 "computing".
 _NO_DATA = object()
+
+
+def _is_zero_signal_result(val) -> bool:
+    """Return True if val is an analyze result where the engine returned _empty_result().
+    These must never be cached — they mean the DataFrame was too short (<30 bars) and
+    will be correct on the next fetch once SQLite has enough data."""
+    return (
+        isinstance(val, dict)
+        and val.get("composite_signal", 1) == 0
+        and val.get("composite_confidence", 1.0) == 0.0
+        and not val.get("signals")
+        and "error" not in val
+    )
 
 # ── Pre-warm OHLCV cache for the most-requested symbols so the first
 #    /api/analyze call hits SQLite, not a live yfinance download ──────────────
@@ -128,8 +142,9 @@ def _cache_symbol(sym: str, period: str, df, data_source: str):
     ]
     now_ts = _time.time()
     with _server_cache_lock:
-        _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
-        _server_cache[f"candles:{sym}:{period}"]  = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
+        if not _is_zero_signal_result(analyze_val):
+            _server_cache[f"analyze:{sym}:{period}"] = {"val": analyze_val, "ts": now_ts}
+        _server_cache[f"candles:{sym}:{period}"] = {"val": {"symbol": sym, "period": period, "candles": rows}, "ts": now_ts}
     return len(rows)
 
 
@@ -160,7 +175,7 @@ def _prewarm():
                 needs_fetch.append(sym)
                 continue
             df, data_source = cached
-            if df.empty or len(df) < 20:
+            if df.empty or len(df) < 50:
                 needs_fetch.append(sym)
                 continue
             n = _cache_symbol(sym, period, df, data_source)
@@ -189,7 +204,7 @@ def _prewarm():
                         df = _clean_yf_df(raw[sym_u].copy())
                     else:
                         df = _clean_yf_df(raw.copy())
-                    if df.empty or len(df) < 20:
+                    if df.empty or len(df) < 50:
                         continue
                     _db_put(sym, period, "1d", df, "yfinance")
                     n = _cache_symbol(sym, period, df, "yfinance")
@@ -204,7 +219,8 @@ def _prewarm():
 
     # Background: batch-fetch the full trading universe into SQLite so daytrade-picks
     # and analyze requests hit SQLite (instant) instead of live yfinance (slow).
-    # Done in chunks of 200 to stay within yfinance batch limits.
+    # Strategy: 2 large chunks of ~300 symbols, threads=False, no inter-chunk sleep.
+    # Benchmarked: ~552/579 symbols in ~77s total (vs 50-chunk/5s-sleep = ~30 min).
     def _bg_refresh():
         global _bg_refresh_done
         import yfinance as yf
@@ -222,59 +238,83 @@ def _prewarm():
                     seen.add(sym)
                     universe.append(sym)
 
-            # Skip symbols already fresh in SQLite
+            # Skip symbols already fresh in SQLite (from prewarm)
             to_fetch = [s for s in universe if _db_get(s, period, "1d") is None]
-            print(f"[bg_refresh] fetching {len(to_fetch)}/{len(universe)} symbols in chunks…", flush=True)
+            print(f"[bg_refresh] fetching {len(to_fetch)}/{len(universe)} symbols (2-chunk strategy)…", flush=True)
 
-            CHUNK = 50  # smaller chunks — reduces concurrent thread collision risk
+            CHUNK = 300  # 2 passes covers ~579-symbol universe in ~80s total
             stored = 0
-            for i in range(0, len(to_fetch), CHUNK):
-                chunk = to_fetch[i: i + CHUNK]
+
+            def _download_chunk(syms: list[str], label: str) -> list[tuple[str, "pd.DataFrame"]]:
+                """Download a batch, falling back to 100-symbol sub-chunks on yfinance dict-mutation errors."""
                 try:
                     raw = yf.download(
-                        tickers=chunk, period=period, interval="1d",
+                        tickers=syms, period=period, interval="1d",
                         group_by="ticker", auto_adjust=True, progress=False,
-                        threads=False,  # no internal threading — avoids RuntimeError on Render
+                        threads=False,
                     )
                     if raw.empty:
-                        continue
-
+                        return []
                     items: list[tuple[str, "pd.DataFrame"]] = []
                     if isinstance(raw.columns, pd.MultiIndex):
                         available = set(raw.columns.get_level_values(0))
-                        for sym in chunk:
+                        for sym in syms:
                             sym_u = sym.upper()
                             if sym_u not in available:
                                 continue
                             try:
                                 df = _clean_yf_df(raw[sym_u].copy())
-                                if not df.empty and len(df) >= 20:
+                                if not df.empty and len(df) >= 30:
                                     items.append((sym_u, df))
                             except Exception:
                                 pass
                     else:
-                        sym_u = chunk[0].upper()
+                        sym_u = syms[0].upper()
                         df = _clean_yf_df(raw.copy())
-                        if not df.empty and len(df) >= 20:
+                        if not df.empty and len(df) >= 30:
                             items.append((sym_u, df))
+                    return items
+                except RuntimeError as e:
+                    if "dictionary changed size" in str(e) and len(syms) > 100:
+                        # yfinance internal dict mutation bug on large batches — split and retry
+                        print(f"[bg_refresh] {label}: dict-size bug, retrying as 100-symbol sub-chunks", flush=True)
+                        result: list[tuple[str, "pd.DataFrame"]] = []
+                        for j in range(0, len(syms), 100):
+                            sub = syms[j: j + 100]
+                            try:
+                                result.extend(_download_chunk(sub, f"{label}[{j//100}]"))
+                            except Exception as sub_e:
+                                print(f"[bg_refresh] sub-chunk error: {sub_e}", flush=True)
+                        return result
+                    raise
 
+            for i in range(0, len(to_fetch), CHUNK):
+                chunk = to_fetch[i: i + CHUNK]
+                chunk_num = i // CHUNK + 1
+                print(f"[bg_refresh] chunk {chunk_num}: {len(chunk)} symbols…", flush=True)
+                try:
+                    items = _download_chunk(chunk, f"chunk {chunk_num}")
                     if items:
                         _db_put_many(items, period, "1d", "yfinance")
                         stored += len(items)
+                    print(f"[bg_refresh] chunk {chunk_num}: stored {len(items)}/{len(chunk)}", flush=True)
                 except Exception as e:
-                    print(f"[bg_refresh] chunk {i//CHUNK+1} error: {type(e).__name__}: {e}", flush=True)
+                    print(f"[bg_refresh] chunk {chunk_num} error: {type(e).__name__}: {e}", flush=True)
 
-                # Pause between chunks to stay under yfinance rate limits
-                if i + CHUNK < len(to_fetch):
-                    _time.sleep(5)
+                # Open the daytrade-picks gate after the first chunk (~40s, ~300 symbols ready)
+                # so users can analyze stocks immediately — chunk 2 fills in the remainder
+                if not _bg_refresh_done:
+                    _bg_refresh_done = True
+                    print(f"[bg_refresh] gate opened after chunk {chunk_num} ({stored} symbols ready)", flush=True)
 
-            print(f"[bg_refresh] done — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
+            print(f"[bg_refresh] complete — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
         except Exception as e:
             print(f"[bg_refresh] fatal error: {e}", flush=True)
         finally:
-            # Always open daytrade-picks gate — even partial data is better than blocking forever
-            _bg_refresh_done = True
-            print("[bg_refresh] gate opened", flush=True)
+            # Guarantee gate is open regardless of outcome — partial data beats permanent 503
+            if not _bg_refresh_done:
+                _bg_refresh_done = True
+                print("[bg_refresh] gate opened (finally)", flush=True)
 
     _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
 
@@ -299,34 +339,60 @@ def _cached(key: str, ttl: float, fn):
     if entry is not None:
         age = now - entry["ts"]
         val = entry["val"]
-        if age < ttl:
-            return val   # fresh
+        if age < ttl and not _is_zero_signal_result(val):
+            return val   # fresh and valid
 
-        # Stale: return stale immediately, refresh in background
-        # Don't refresh _NO_DATA entries for 5 minutes (avoid hammering yfinance on bad tickers)
-        no_data_ttl = 300
-        if val is _NO_DATA and age < no_data_ttl:
+        # Don't re-hammer bad tickers with _NO_DATA for 5 minutes
+        if val is _NO_DATA and age < 300:
             return _NO_DATA
+
+        # Stale (or fresh-but-zero) — kick off background recompute
+        ev: "_threading.Event | None" = None
         with _server_cache_lock:
             if key not in _recomputing:
                 _recomputing.add(key)
-                def _bg(k=key, f=fn):
+                ev = _threading.Event()
+                _compute_events[key] = ev
+                def _bg(k=key, f=fn, e=ev, prev=val):
                     try:
                         v = f()
                         stored = v if v is not None else _NO_DATA
                         with _server_cache_lock:
-                            _server_cache[k] = {"val": stored, "ts": _time.time()}
-                    except Exception as e:
-                        print(f"[_cached] stale refresh {k} error: {e}", flush=True)
+                            if not _is_zero_signal_result(stored):
+                                _server_cache[k] = {"val": stored, "ts": _time.time()}
+                            elif _is_zero_signal_result(prev) or prev is _NO_DATA:
+                                # Recompute still zero AND the stale entry was also zero/NO_DATA —
+                                # write 60s cooldown so each request doesn't re-trigger a _bg.
+                                _server_cache[k] = {"val": _NO_DATA, "ts": _time.time() - 240}
+                            # else: stale entry was a real signal but recompute got zeros —
+                            # leave the stale real signal in cache so callers still get it.
+                    except Exception as e2:
+                        print(f"[_cached] stale refresh {k} error: {e2}", flush=True)
                     finally:
                         with _server_cache_lock:
                             _recomputing.discard(k)
                             _compute_events.pop(k, None)
+                        e.set()
                 _threading.Thread(target=_bg, daemon=True).start()
-        return val
+            else:
+                ev = _compute_events.get(key)
+
+        # For zero-signal entries or stale, wait up to 7s for fresh result
+        if ev is not None:
+            ev.wait(timeout=7.0)
+        with _server_cache_lock:
+            fresh_entry = _server_cache.get(key)
+        if fresh_entry is not None and not _is_zero_signal_result(fresh_entry["val"]):
+            return fresh_entry["val"]
+
+        # Return stale non-zero value if recompute didn't improve things
+        if val is not _NO_DATA and not _is_zero_signal_result(val):
+            return val
+        # Recompute also produced zeros (or _NO_DATA) — don't serve zero dict as 200
+        return _NO_DATA if val is _NO_DATA else None
 
     # Cache miss — one thread computes, all concurrent callers share the event.
-    ev: "_threading.Event | None" = None
+    ev = None
     with _server_cache_lock:
         if key not in _recomputing:
             ev = _threading.Event()
@@ -338,7 +404,12 @@ def _cached(key: str, ttl: float, fn):
                     v = f()
                     stored = v if v is not None else _NO_DATA
                     with _server_cache_lock:
-                        _server_cache[k] = {"val": stored, "ts": _time.time()}
+                        if not _is_zero_signal_result(stored):
+                            _server_cache[k] = {"val": stored, "ts": _time.time()}
+                        else:
+                            # Zero-signal despite live fetch — cache _NO_DATA for 60s to
+                            # avoid hammering the same bad/thin symbol on every request.
+                            _server_cache[k] = {"val": _NO_DATA, "ts": _time.time() - 240}
                 except Exception as ex:
                     print(f"[_cached] miss compute {k} error: {ex}", flush=True)
                 finally:
@@ -444,14 +515,16 @@ def analyze(symbol: str = "AAPL", period: str = "1y"):
 
     def _compute():
         df, data_source = fetch_with_source(sym, period=period, interval="1d")
-        if df.empty:
-            return None
+        if df.empty or len(df) < 50:
+            return None  # → _NO_DATA → 404, not infinite 503
         try:
             result = _engine.analyze(df, sym)
         except Exception as e:
             return {"error": str(e), "symbol": sym}
         quote, quote_source = fetch_quote_with_source(sym)
-        return _build_analyze_val(result, quote, quote_source, data_source)
+        built = _build_analyze_val(result, quote, quote_source, data_source)
+        # Engine returned _empty_result despite enough bars — bad data quality; signal 404
+        return None if _is_zero_signal_result(built) else built
 
     val = _cached(cache_key, ttl=120, fn=_compute)
     if val is _NO_DATA:
@@ -504,40 +577,56 @@ def backtest_stress(symbol: str = "AAPL", period: str = "5y", cash: float = 100_
 @app.get("/api/watchlist")
 def watchlist(symbols: str = "AAPL,MSFT,NVDA,GOOGL,AMZN,META,TSLA,JPM,V,UNH,SPY,QQQ,BRK-B,JNJ,XOM"):
     sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()][:20]
-    cache_key = f"watchlist:{'|'.join(sym_list)}"
 
-    def _compute():
-        results = []
-        for sym in sym_list:
+    # Per-symbol cache — analyze each symbol independently so partial results
+    # are served immediately (no 503 while waiting for all 20 symbols at once).
+    results = []
+    for sym in sym_list:
+        cache_key = f"watchlist_sym:{sym}"
+        with _server_cache_lock:
+            entry = _server_cache.get(cache_key)
+        if entry is not None and (_time.time() - entry["ts"]) < 300:
+            if entry["val"] is not _NO_DATA:
+                results.append(entry["val"])
+            continue
+
+        # Not cached — compute inline (fast if in SQLite, skipped if no data)
+        try:
             df = fetch(sym, period="6mo", interval="1d")
-            if df.empty:
-                continue
-            try:
+            # Engine requires >= 50 bars (40-bar Hurst window + dropna headroom)
+            if not df.empty and len(df) >= 50:
                 r = _engine.analyze(df, sym)
-            except Exception:
-                continue
-            quote = fetch_quote(sym)
-            results.append({
-                "symbol":     sym,
-                "price":      quote.get("price", 0),
-                "change_pct": quote.get("change_pct", 0),
-                "signal":     r.composite_signal,
-                "confidence": r.composite_confidence,
-                "regime":     r.regime,
-                "rsi":        r.indicators.get("rsi_14", 50),
-                "sharpe":     r.risk_metrics.get("sharpe", 0),
-                "kelly_pct":  r.position_size_pct,
-            })
-        results.sort(key=lambda x: abs(x["confidence"]) * abs(x["signal"]), reverse=True)
-        return {"watchlist": results}
+                # Watchlist row uses "signal"/"confidence" keys, not "composite_*",
+                # so check the engine result directly rather than _is_zero_signal_result.
+                if r.composite_signal == 0 and r.composite_confidence == 0.0 and not r.signals:
+                    # Engine returned _empty_result — bad data quality despite enough bars.
+                    # Cache as _NO_DATA with 60s cooldown to avoid hammering on every call.
+                    with _server_cache_lock:
+                        _server_cache[cache_key] = {"val": _NO_DATA, "ts": _time.time() - 240}
+                else:
+                    quote = fetch_quote(sym)
+                    row = {
+                        "symbol":     sym,
+                        "price":      quote.get("price", 0),
+                        "change_pct": quote.get("change_pct", 0),
+                        "signal":     r.composite_signal,
+                        "confidence": r.composite_confidence,
+                        "regime":     r.regime,
+                        "rsi":        r.indicators.get("rsi_14", 50),
+                        "sharpe":     r.risk_metrics.get("sharpe", 0),
+                        "kelly_pct":  r.position_size_pct,
+                    }
+                    with _server_cache_lock:
+                        _server_cache[cache_key] = {"val": row, "ts": _time.time()}
+                    results.append(row)
+            else:
+                with _server_cache_lock:
+                    _server_cache[cache_key] = {"val": _NO_DATA, "ts": _time.time()}
+        except Exception as e:
+            print(f"[watchlist] {sym} error: {e}", flush=True)
 
-    val = _cached(cache_key, ttl=300, fn=_compute)
-    if val is None:
-        return JSONResponse(
-            {"error": "computing", "retry_after": 5},
-            status_code=503, headers={"Retry-After": "5"},
-        )
-    return val
+    results.sort(key=lambda x: abs(x["confidence"]) * abs(x["signal"]), reverse=True)
+    return {"watchlist": results}
 
 
 _quote_cache: dict[str, tuple[dict, float]] = {}
@@ -1794,7 +1883,7 @@ def options_signal(
     def _compute():
         # Get directional signal from quant engine
         df = fetch(sym, period=HORIZONS[horizon]["period"], interval="1d")
-        if df.empty:
+        if df.empty or len(df) < 50:
             return None
         r = _engine.analyze(df, sym, horizon=horizon)
         if r.composite_signal == 0:
@@ -1842,6 +1931,153 @@ def options_signal(
     if val is None:
         return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
     return val
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Finnhub endpoints — free-tier fundamental, sentiment, and catalyst data
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/finnhub/context")
+def finnhub_context(symbol: str = "AAPL"):
+    """
+    Aggregate Finnhub free-tier signals for a symbol:
+    fundamentals, analyst recommendations, earnings surprise history,
+    insider sentiment (MSPR), peers, upcoming earnings date, social sentiment.
+    All results cached independently — returns partial data immediately.
+    """
+    sym = symbol.upper()
+    return _fh.get_full_context(sym)
+
+
+@app.get("/api/finnhub/fundamentals")
+def finnhub_fundamentals(symbol: str = "AAPL"):
+    """PE, beta, 52w range, EPS, revenue growth, ROE, debt/equity, mkt cap."""
+    sym = symbol.upper()
+    result = _fh.get_fundamentals(sym)
+    if result is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return result
+
+
+@app.get("/api/finnhub/recommendation")
+def finnhub_recommendation(symbol: str = "AAPL"):
+    """Analyst consensus: strongBuy/buy/hold/sell/strongSell with normalized score -1 to +1."""
+    sym = symbol.upper()
+    result = _fh.get_recommendation(sym)
+    if result is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return result
+
+
+@app.get("/api/finnhub/earnings")
+def finnhub_earnings(symbol: str = "AAPL"):
+    """Last 4 quarters earnings surprises — beat/miss history."""
+    sym = symbol.upper()
+    result = _fh.get_earnings_surprises(sym)
+    if result is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return {"symbol": sym, "earnings": result}
+
+
+@app.get("/api/finnhub/earnings-calendar")
+def finnhub_earnings_calendar(days: int = 14):
+    """Upcoming earnings dates and EPS estimates for the next N days."""
+    result = _fh.get_earnings_calendar(days_ahead=days)
+    if result is None:
+        return {"calendar": []}
+    return {"calendar": result}
+
+
+@app.get("/api/finnhub/insider-sentiment")
+def finnhub_insider_sentiment(symbol: str = "AAPL"):
+    """
+    Monthly Share Purchase Ratio (MSPR) — insider buying pressure.
+    Positive = net insider buying (bullish). Negative = net selling (bearish).
+    """
+    sym = symbol.upper()
+    result = _fh.get_insider_sentiment(sym)
+    if result is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return result
+
+
+@app.get("/api/finnhub/insider-transactions")
+def finnhub_insider_transactions(symbol: str = "AAPL"):
+    """Recent insider buy/sell transactions with name, shares, price, date."""
+    sym = symbol.upper()
+    result = _fh.get_insider_transactions(sym)
+    if result is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return {"symbol": sym, "transactions": result}
+
+
+@app.get("/api/finnhub/news")
+def finnhub_news(symbol: str = "AAPL", days: int = 7):
+    """Recent company news (headlines, summaries, sources)."""
+    sym = symbol.upper()
+    result = _fh.get_company_news(sym, days=days)
+    if result is None:
+        return {"symbol": sym, "news": []}
+    return {"symbol": sym, "news": result}
+
+
+@app.get("/api/finnhub/market-news")
+def finnhub_market_news(category: str = "general"):
+    """Market-wide news. category: general | forex | crypto | merger."""
+    result = _fh.get_market_news(category)
+    if result is None:
+        return {"news": []}
+    return {"category": category, "news": result}
+
+
+@app.get("/api/finnhub/social-sentiment")
+def finnhub_social_sentiment(symbol: str = "AAPL"):
+    """Reddit and Twitter mention counts and sentiment scores (7-day window)."""
+    sym = symbol.upper()
+    result = _fh.get_social_sentiment(sym)
+    if result is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return {"symbol": sym, **result}
+
+
+@app.get("/api/finnhub/peers")
+def finnhub_peers(symbol: str = "AAPL"):
+    """Peer company tickers for sector comparison."""
+    sym = symbol.upper()
+    result = _fh.get_peers(sym)
+    if result is None:
+        return {"symbol": sym, "peers": []}
+    return {"symbol": sym, "peers": result}
+
+
+@app.get("/api/finnhub/economic-calendar")
+def finnhub_economic_calendar():
+    """Upcoming macro events: CPI, FOMC, GDP, jobs reports with impact level."""
+    result = _fh.get_economic_calendar()
+    if result is None:
+        return {"events": []}
+    return {"events": result}
+
+
+@app.get("/api/finnhub/congressional-trading")
+def finnhub_congressional_trading(symbol: str = "AAPL"):
+    """Congressional buy/sell disclosures — tracks smart-money government insider trades."""
+    sym = symbol.upper()
+    result = _fh.get_congressional_trading(sym)
+    if result is None:
+        return {"symbol": sym, "trades": []}
+    return {"symbol": sym, "trades": result}
+
+
+@app.get("/api/finnhub/profile")
+def finnhub_profile(symbol: str = "AAPL"):
+    """Company profile: name, exchange, sector/industry, market cap, logo URL."""
+    sym = symbol.upper()
+    result = _fh.get_profile(sym)
+    if result is None:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    return result
 
 
 if __name__ == "__main__":

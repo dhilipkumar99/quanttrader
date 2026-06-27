@@ -818,7 +818,7 @@ export function IntradayPanel() {
 
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await fetch("/api/intraday/history?limit=10");
+      const res = await fetch("/api/intraday/history?limit=10", { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json() as { sessions: SessionSummary[] };
       setHistory(data.sessions ?? []);
@@ -827,7 +827,7 @@ export function IntradayPanel() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/intraday/status");
+      const res = await fetch("/api/intraday/status", { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json() as IntradayStatus;
       setStatus(data);

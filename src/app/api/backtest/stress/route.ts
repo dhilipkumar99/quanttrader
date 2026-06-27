@@ -12,15 +12,15 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(
       `${PYTHON_BASE}/api/backtest/stress?symbol=${encodeURIComponent(symbol)}&period=${period}&cash=${cash}`,
-      { signal: AbortSignal.timeout(120_000) }
+      { signal: AbortSignal.timeout(120_000), cache: "no-store" }
     );
     const data = await res.json();
     return NextResponse.json(data, {
       status: res.status,
-      headers: { "Cache-Control": "s-maxage=3600, stale-while-revalidate=86400" },
+      headers: { "Cache-Control": "no-store" },
     });
   } catch (e: unknown) {
     const msg = (e as Error)?.name === "TimeoutError" ? "timeout" : String(e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: msg }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }

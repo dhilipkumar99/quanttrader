@@ -12,7 +12,7 @@ async function getAnalysis(symbol: string) {
       ? `https://${process.env.VERCEL_URL}`
       : "http://localhost:3000";
     const res = await fetch(`${base}/api/analyze?symbol=${encodeURIComponent(symbol)}&period=1y`, {
-      next: { revalidate: 60 },
+      cache: "no-store",
     });
     if (!res.ok) return null;
     return res.json();

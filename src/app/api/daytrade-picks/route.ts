@@ -19,13 +19,13 @@ export async function GET(req: NextRequest) {
   for (const delay of delays) {
     if (delay > 0) await new Promise(r => setTimeout(r, delay));
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(4_500) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(4_500), cache: "no-store" });
       if (res.status !== 503) {
         const data = await res.json();
         return NextResponse.json(data, {
           status: res.status,
           headers: res.ok
-            ? { "Cache-Control": "s-maxage=900, stale-while-revalidate=3600" }
+            ? { "Cache-Control": "no-store" }
             : { "Cache-Control": "no-store" },
         });
       }

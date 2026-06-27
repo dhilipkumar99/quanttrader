@@ -12,12 +12,14 @@ export async function GET(req: NextRequest) {
   // we get the answer. If it returns 503 (still computing) or we time out, we pass 503
   // back to the client — ComputingError in api.ts retries after retryAfter seconds.
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8_500) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_500), cache: "no-store" });
     const data = await res.json();
     if (res.ok) {
+      // Never CDN-cache analysis results — composite_signal/confidence must reflect live data.
+      // Stale CDN entries silently serve zero-signal responses from earlier broken states.
       return NextResponse.json(data, {
         status: 200,
-        headers: { "Cache-Control": "s-maxage=300, stale-while-revalidate=3600" },
+        headers: { "Cache-Control": "no-store" },
       });
     }
     // 503 computing or 404 no_data — pass through with correct headers
