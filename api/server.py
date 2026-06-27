@@ -218,6 +218,19 @@ def _prewarm():
     _prewarm_done = True
     print("[prewarm] done — /health now ok", flush=True)
 
+    # Kick off leaderboard computation now so it's ready before the first request.
+    # We start it in a daemon thread immediately after prewarm — the 20 core symbols
+    # are already in SQLite so fetch() will return instantly for all of them.
+    def _prewarm_leaderboard():
+        for h in ("swing", "day", "month"):
+            try:
+                _cached(f"leaderboard:{h}", ttl=3600, fn=lambda horizon=h: _compute_leaderboard(horizon))
+                print(f"[prewarm] leaderboard:{h} pre-computed", flush=True)
+            except Exception as e:
+                print(f"[prewarm] leaderboard:{h} error: {e}", flush=True)
+
+    _threading.Thread(target=_prewarm_leaderboard, daemon=True, name="prewarm-leaderboard").start()
+
     # Background: batch-fetch the full trading universe into SQLite so daytrade-picks
     # and analyze requests hit SQLite (instant) instead of live yfinance (slow).
     # Strategy: 2 large chunks of ~300 symbols, threads=False, no inter-chunk sleep.
@@ -1231,84 +1244,82 @@ def signal_history(symbol: str = "AAPL", period: str = "1y"):
     return val
 
 
+_LEADERBOARD_CORE = [
+    "AAPL", "NVDA", "MSFT", "GOOGL", "META", "AMZN", "TSLA",
+    "AMD", "NFLX", "JPM", "BAC", "GS", "ORCL", "ADBE", "CRM",
+    "SPY", "QQQ", "XLK", "XLF", "COST",
+]
+
+
+def _compute_leaderboard(horizon: str) -> dict:
+    """Walk-forward signal accuracy for CORE symbols. Called from prewarm and on-demand."""
+    import concurrent.futures
+    WARMUP = 60; STEP = 10; FWDLOOK = 10
+    rows = []
+
+    def _do_one(sym: str):
+        try:
+            df = fetch(sym, period="1y", interval="1d")
+            if df.empty or len(df) < 80:
+                return None
+            closes = df["Close"].values
+            executed, wins, losses, rets = 0, 0, 0, []
+            for i in range(WARMUP, len(df) - FWDLOOK, STEP):
+                window = df.iloc[:i]
+                try:
+                    r = _engine.analyze(window, sym, horizon=horizon)
+                except Exception:
+                    continue
+                sig = r.composite_signal
+                if sig == 0:
+                    continue
+                price_now = float(closes[i])
+                price_fwd = float(closes[i + FWDLOOK])
+                fwd_ret = (price_fwd - price_now) / price_now * 100
+                directed = fwd_ret if sig == 1 else -fwd_ret
+                executed += 1
+                rets.append(directed)
+                if directed > 0.5:
+                    wins += 1
+                elif directed < -0.5:
+                    losses += 1
+            if executed == 0:
+                return None
+            return {
+                "symbol":       sym,
+                "horizon":      horizon,
+                "signals":      executed,
+                "wins":         wins,
+                "losses":       losses,
+                "win_rate":     round(wins / max(wins + losses, 1) * 100, 1),
+                "avg_return":   round(sum(rets) / len(rets), 2),
+                "last_updated": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            }
+        except Exception:
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        for item in ex.map(_do_one, _LEADERBOARD_CORE):
+            if item is not None:
+                rows.append(item)
+
+    rows.sort(key=lambda x: x["win_rate"], reverse=True)
+    return {
+        "horizon": horizon,
+        "rows": rows,
+        "symbols_scored": len(rows),
+        "generated_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+    }
+
+
 @app.get("/api/leaderboard")
 def leaderboard(horizon: str = "swing"):
-    """
-    Signal leaderboard: aggregated win-rate and avg return across 20 core symbols
-    over the past year. Cached 1 hour — expensive but rare.
-    """
-    import concurrent.futures
-
-    CORE_SYMBOLS = [
-        "AAPL", "NVDA", "MSFT", "GOOGL", "META", "AMZN", "TSLA",
-        "AMD", "NFLX", "JPM", "BAC", "GS", "ORCL", "ADBE", "CRM",
-        "SPY", "QQQ", "XLK", "XLF", "COST",
-    ]
+    """Signal leaderboard: win-rate and avg return across 20 core symbols. Cached 1h."""
     cache_key = f"leaderboard:{horizon}"
-
-    def _compute():
-        WARMUP = 60; STEP = 10; FWDLOOK = 10
-        rows = []
-
-        def _do_one(sym: str):
-            try:
-                df = fetch(sym, period="1y", interval="1d")
-                if df.empty or len(df) < 80:
-                    return None
-                closes = df["Close"].values
-                dates  = [str(d)[:10] for d in df.index]
-                executed, wins, losses, rets = 0, 0, 0, []
-                for i in range(WARMUP, len(df) - FWDLOOK, STEP):
-                    window = df.iloc[:i]
-                    try:
-                        r = _engine.analyze(window, sym, horizon=horizon)
-                    except Exception:
-                        continue
-                    sig = r.composite_signal
-                    if sig == 0:
-                        continue
-                    price_now = float(closes[i])
-                    price_fwd = float(closes[i + FWDLOOK])
-                    fwd_ret = (price_fwd - price_now) / price_now * 100
-                    directed = fwd_ret if sig == 1 else -fwd_ret
-                    executed += 1
-                    rets.append(directed)
-                    if directed > 0.5:
-                        wins += 1
-                    elif directed < -0.5:
-                        losses += 1
-                if executed == 0:
-                    return None
-                return {
-                    "symbol":       sym,
-                    "horizon":      horizon,
-                    "signals":      executed,
-                    "wins":         wins,
-                    "losses":       losses,
-                    "win_rate":     round(wins / max(wins + losses, 1) * 100, 1),
-                    "avg_return":   round(sum(rets) / len(rets), 2),
-                    "last_updated": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                }
-            except Exception:
-                return None
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-            for item in ex.map(_do_one, CORE_SYMBOLS):
-                if item is not None:
-                    rows.append(item)
-
-        rows.sort(key=lambda x: x["win_rate"], reverse=True)
-        return {
-            "horizon": horizon,
-            "rows": rows,
-            "symbols_scored": len(rows),
-            "generated_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-        }
-
-    val = _cached(cache_key, ttl=3600, fn=_compute)
+    val = _cached(cache_key, ttl=3600, fn=lambda: _compute_leaderboard(horizon))
     if val is None:
-        return JSONResponse({"error": "computing", "retry_after": 15}, status_code=503, headers={"Retry-After": "15"})
-    return val
+        return JSONResponse({"error": "computing", "retry_after": 15}, status_code=503, headers={"Retry-After": "15", "Cache-Control": "no-store"})
+    return JSONResponse(val, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/daytrade-picks")
@@ -1578,16 +1589,19 @@ def charts_batch(symbols: str = "", period: str = "6mo"):
 def candles(symbol: str = "AAPL", period: str = "1y"):
     """OHLC price series. Signals from backtest are reused if already cached; skipped otherwise."""
     sym = symbol.upper()
-    cache_key = f"candles:{sym}:{period}"
+    # Short periods have <50 bars — canonicalize to 1y so SQLite cache is always hit.
+    _SHORT = {"1d", "5d", "1mo", "3mo"}
+    fetch_period = "1y" if period in _SHORT else period
+    cache_key = f"candles:{sym}:{fetch_period}"
 
     def _compute():
-        df = fetch(sym, period=period, interval="1d")
+        df = fetch(sym, period=fetch_period, interval="1d")
         if df.empty:
             return None
 
         # Reuse backtest fills only if a prior backtest result is already in cache
         signal_map: dict[str, int] = {}
-        backtest_cache_key = f"backtest:{sym}:{period}"
+        backtest_cache_key = f"backtest:{sym}:{fetch_period}"
         with _server_cache_lock:
             bt_entry = _server_cache.get(backtest_cache_key)
         if bt_entry:
@@ -1607,17 +1621,17 @@ def candles(symbol: str = "AAPL", period: str = "1y"):
                 "volume": int(row["Volume"]),
                 "signal": signal_map.get(date_str, 0),
             })
-        return {"symbol": sym, "period": period, "candles": rows}
+        return {"symbol": sym, "period": fetch_period, "candles": rows}
 
-    val = _cached(cache_key, ttl=120, fn=_compute)
+    val = _cached(cache_key, ttl=600, fn=_compute)
     if val is _NO_DATA:
-        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404, headers={"Cache-Control": "no-store"})
     if val is None:
         return JSONResponse(
             {"error": "computing", "symbol": sym, "retry_after": 5},
-            status_code=503, headers={"Retry-After": "5"},
+            status_code=503, headers={"Retry-After": "5", "Cache-Control": "no-store"},
         )
-    return val
+    return JSONResponse(val, headers={"Cache-Control": "no-store"})
 
 
 
