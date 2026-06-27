@@ -342,8 +342,11 @@ def _cached(key: str, ttl: float, fn):
         if age < ttl and not _is_zero_signal_result(val):
             return val   # fresh and valid
 
-        # Don't re-hammer bad tickers with _NO_DATA for 5 minutes
-        if val is _NO_DATA and age < 300:
+        # Don't re-hammer bad tickers with _NO_DATA.
+        # During bg_refresh, SQLite is still being populated — cap block at 30s
+        # so symbols that failed due to yfinance contention retry sooner.
+        _no_data_block = 30 if not _bg_refresh_done else 300
+        if val is _NO_DATA and age < _no_data_block:
             return _NO_DATA
 
         # Stale (or fresh-but-zero) — kick off background recompute
@@ -514,14 +517,16 @@ def trigger_td_sweep(force: bool = False, period: str = "1y"):
 @app.get("/api/analyze")
 def analyze(symbol: str = "AAPL", period: str = "1y"):
     sym = symbol.upper()
-    cache_key = f"analyze:{sym}:{period}"
+
+    # Periods that yield <50 bars cannot produce a valid signal.
+    # Canonicalize them to "1y" so they share a cache key with the 1y result
+    # and never get stuck in a _NO_DATA cooldown loop.
+    _SHORT_PERIODS = {"1d", "5d", "1mo", "3mo"}
+    fetch_period = "1y" if period in _SHORT_PERIODS else period
+    cache_key = f"analyze:{sym}:{fetch_period}"
 
     def _compute():
-        df, data_source = fetch_with_source(sym, period=period, interval="1d")
-        # Short periods (1mo, 3mo) yield <50 bars — fall back to 1y for analysis
-        # while still reporting the requested period in the response.
-        if df.empty or len(df) < 50:
-            df, data_source = fetch_with_source(sym, period="1y", interval="1d")
+        df, data_source = fetch_with_source(sym, period=fetch_period, interval="1d")
         if df.empty or len(df) < 50:
             return None  # → _NO_DATA → 404
         try:
@@ -532,7 +537,7 @@ def analyze(symbol: str = "AAPL", period: str = "1y"):
         built = _build_analyze_val(result, quote, quote_source, data_source)
         return None if _is_zero_signal_result(built) else built
 
-    val = _cached(cache_key, ttl=120, fn=_compute)
+    val = _cached(cache_key, ttl=600, fn=_compute)
     if val is _NO_DATA:
         return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
     if val is None:
