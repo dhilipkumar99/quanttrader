@@ -608,8 +608,8 @@ def backtest(symbol: str = "AAPL", period: str = "1y", cash: float = 100_000):
         return trader.run_backtest(df, sym)
 
     val = _cached(cache_key, ttl=600, fn=_compute)
-    if val is None:
-        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    if val is None or val is _NO_DATA:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404, headers={"Cache-Control": "no-store"})
     return val
 
 
@@ -621,14 +621,14 @@ def backtest_stress(symbol: str = "AAPL", period: str = "5y", cash: float = 100_
 
     def _compute():
         df = fetch(sym, period=period, interval="1d")
-        if df.empty:
+        if df.empty or len(df) < 50:
             return None
         trader = PaperTrader(initial_cash=cash)
         return trader.run_stress_test(df, sym)
 
     val = _cached(cache_key, ttl=3600, fn=_compute)
-    if val is None:
-        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    if val is None or val is _NO_DATA:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404, headers={"Cache-Control": "no-store"})
     return val
 
 
@@ -1020,8 +1020,8 @@ def portfolio_risk(symbols: str = "AAPL,MSFT,NVDA", period: str = "1y"):
         }
 
     val = _cached(cache_key, ttl=600, fn=_compute)
-    if val is None:
-        return JSONResponse({"error": "insufficient_data"}, status_code=422)
+    if val is None or val is _NO_DATA:
+        return JSONResponse({"error": "insufficient_data"}, status_code=422, headers={"Cache-Control": "no-store"})
     return val
 
 
@@ -1171,8 +1171,8 @@ def portfolio_backtest(symbols: str = "AAPL,MSFT,NVDA", period: str = "1y", cash
         }
 
     val = _cached(cache_key, ttl=300, fn=_compute)
-    if val is None:
-        return JSONResponse({"error": "insufficient_data"}, status_code=422)
+    if val is None or val is _NO_DATA:
+        return JSONResponse({"error": "insufficient_data"}, status_code=422, headers={"Cache-Control": "no-store"})
     return val
 
 
@@ -1248,8 +1248,8 @@ def signal_history(symbol: str = "AAPL", period: str = "1y"):
         }
 
     val = _cached(cache_key, ttl=300, fn=_compute)
-    if val is None:
-        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    if val is None or val is _NO_DATA:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404, headers={"Cache-Control": "no-store"})
     return val
 
 
@@ -1510,11 +1510,13 @@ def daytrade_picks(limit: int = 20, universe: str = "sp500",
         }
 
     val = _cached(cache_key, ttl=900, fn=_compute)
+    if val is _NO_DATA:
+        return JSONResponse({"error": "no_data"}, status_code=404, headers={"Cache-Control": "no-store"})
     if val is None:
         return JSONResponse(
             {"error": "computing", "retry_after": 5},
             status_code=503,
-            headers={"Retry-After": "5"},
+            headers={"Retry-After": "5", "Cache-Control": "no-store"},
         )
 
     # Server-side beginner filter: stricter safety constraints
@@ -1905,11 +1907,11 @@ def options_chain(symbol: str = "AAPL", force: bool = False):
             return None
         return chain_to_dict(chain)
     val = _cached(cache_key, ttl=300, fn=_compute)
-    if val is None:
+    if val is None or val is _NO_DATA:
         return JSONResponse(
             {"error": "no_options_data", "symbol": sym,
              "message": "No options chain available. The stock may not have listed options, or yfinance is rate-limited. Try again in 30s."},
-            status_code=404
+            status_code=404, headers={"Cache-Control": "no-store"}
         )
     return val
 
@@ -1987,8 +1989,8 @@ def options_signal(
         }
 
     val = _cached(cache_key, ttl=180, fn=_compute)
-    if val is None:
-        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404)
+    if val is None or val is _NO_DATA:
+        return JSONResponse({"error": "no_data", "symbol": sym}, status_code=404, headers={"Cache-Control": "no-store"})
     return val
 
 
