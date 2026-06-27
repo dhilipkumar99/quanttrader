@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { api, type LeaderboardRow, type LeaderboardResult } from "@/lib/api";
+import { api, ComputingError, type LeaderboardRow, type LeaderboardResult } from "@/lib/api";
 import { RefreshCw, TrendingUp, Trophy } from "lucide-react";
 
 const FONT_BODY = "'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif";
@@ -49,21 +49,18 @@ export function LeaderboardPanel({ onSelectSymbol }: Props) {
         if (!cancelled) { setData(d); setLoading(false); }
       } catch (e: unknown) {
         if (cancelled) return;
-        const msg = String(e);
-        // 503 = still computing during server warm-up — retry up to 4 times
-        if (msg.includes("503") || msg.includes("computing")) {
-          if (attempt < 4) {
-            const delay = (attempt + 1) * 15_000; // 15s, 30s, 45s, 60s
-            retryTimer = setTimeout(() => load(attempt + 1), delay);
-            // Show a gentle "warming up" message instead of an error
-            setError(`warming_up:${attempt}`);
-            setLoading(false);
-          } else {
-            setError("Server is still warming up. Refresh in a minute.");
-            setLoading(false);
-          }
+        if (e instanceof ComputingError && attempt < 6) {
+          // Server is computing leaderboard (~30s on cold start) — retry using server hint
+          const delay = (e.retryAfter ?? 15) * 1000;
+          retryTimer = setTimeout(() => load(attempt + 1), delay);
+          setError(`warming_up:${attempt}`);
+          setLoading(false);
+        } else if (attempt < 6 && String(e).includes("computing")) {
+          retryTimer = setTimeout(() => load(attempt + 1), 15_000);
+          setError(`warming_up:${attempt}`);
+          setLoading(false);
         } else {
-          setError(msg);
+          setError(attempt >= 6 ? "Leaderboard is taking longer than usual. Refresh to retry." : String(e));
           setLoading(false);
         }
       }

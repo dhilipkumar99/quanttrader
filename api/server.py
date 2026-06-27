@@ -361,9 +361,10 @@ def _cached(key: str, ttl: float, fn):
                             if not _is_zero_signal_result(stored):
                                 _server_cache[k] = {"val": stored, "ts": _time.time()}
                             elif _is_zero_signal_result(prev) or prev is _NO_DATA:
-                                # Recompute still zero AND the stale entry was also zero/NO_DATA —
-                                # write 60s cooldown so each request doesn't re-trigger a _bg.
-                                _server_cache[k] = {"val": _NO_DATA, "ts": _time.time() - 240}
+                                # Recompute still zero AND stale entry was also zero/NO_DATA.
+                                # Shorter cooldown during prewarm so symbol unlocks quickly.
+                                backoff = 290 if not _prewarm_done else 240
+                                _server_cache[k] = {"val": _NO_DATA, "ts": _time.time() - backoff}
                             # else: stale entry was a real signal but recompute got zeros —
                             # leave the stale real signal in cache so callers still get it.
                     except Exception as e2:
@@ -407,9 +408,11 @@ def _cached(key: str, ttl: float, fn):
                         if not _is_zero_signal_result(stored):
                             _server_cache[k] = {"val": stored, "ts": _time.time()}
                         else:
-                            # Zero-signal despite live fetch — cache _NO_DATA for 60s to
-                            # avoid hammering the same bad/thin symbol on every request.
-                            _server_cache[k] = {"val": _NO_DATA, "ts": _time.time() - 240}
+                            # Zero/no-data result. During prewarm, yfinance may 401 before
+                            # SQLite is populated — use 10s cooldown so symbol unlocks once
+                            # prewarm finishes. After prewarm, use 60s to avoid hammering.
+                            backoff = 290 if not _prewarm_done else 240
+                            _server_cache[k] = {"val": _NO_DATA, "ts": _time.time() - backoff}
                 except Exception as ex:
                     print(f"[_cached] miss compute {k} error: {ex}", flush=True)
                 finally:
@@ -515,15 +518,18 @@ def analyze(symbol: str = "AAPL", period: str = "1y"):
 
     def _compute():
         df, data_source = fetch_with_source(sym, period=period, interval="1d")
+        # Short periods (1mo, 3mo) yield <50 bars — fall back to 1y for analysis
+        # while still reporting the requested period in the response.
         if df.empty or len(df) < 50:
-            return None  # → _NO_DATA → 404, not infinite 503
+            df, data_source = fetch_with_source(sym, period="1y", interval="1d")
+        if df.empty or len(df) < 50:
+            return None  # → _NO_DATA → 404
         try:
             result = _engine.analyze(df, sym)
         except Exception as e:
             return {"error": str(e), "symbol": sym}
         quote, quote_source = fetch_quote_with_source(sym)
         built = _build_analyze_val(result, quote, quote_source, data_source)
-        # Engine returned _empty_result despite enough bars — bad data quality; signal 404
         return None if _is_zero_signal_result(built) else built
 
     val = _cached(cache_key, ttl=120, fn=_compute)
@@ -1271,7 +1277,7 @@ def leaderboard(horizon: str = "swing"):
 
     val = _cached(cache_key, ttl=3600, fn=_compute)
     if val is None:
-        return JSONResponse({"error": "computing", "retry_after": 60}, status_code=503, headers={"Retry-After": "60"})
+        return JSONResponse({"error": "computing", "retry_after": 15}, status_code=503, headers={"Retry-After": "15"})
     return val
 
 
