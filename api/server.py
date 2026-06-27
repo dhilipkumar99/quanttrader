@@ -43,6 +43,7 @@ from api.quant.charts_db import (
     get_chart, get_charts_batch, get_sweep_status, run_sweep, sweep_is_stale, ensure_chart
 )
 from api.quant.ohlcv_store import _clean_yf_df, _db_put_many
+from api.quant.ohlcv_store import set_bg_refresh_complete, drain_priority_queue, request_priority_fetch
 from api.quant import finnhub_client as _fh
 
 app = FastAPI(title="QuantTrader API")
@@ -289,7 +290,29 @@ def _prewarm():
                     raise
 
             for i in range(0, len(to_fetch), CHUNK):
+                # Fix 2: drain priority queue — symbols the user has already searched
+                # get fetched first so they land in SQLite before the next retry.
+                priority = drain_priority_queue()
+                # Remove priority symbols from the pending bulk list to avoid
+                # double-fetching, then prepend them to the current chunk.
+                to_fetch_set = set(to_fetch[i:])
+                priority_new = [s for s in priority if s in to_fetch_set and _db_get(s, period, "1d") is None]
+                if priority_new:
+                    print(f"[bg_refresh] priority: fetching {priority_new} first", flush=True)
+                    try:
+                        p_items = _download_chunk(priority_new, "priority")
+                        if p_items:
+                            _db_put_many(p_items, period, "1d", "yfinance")
+                            stored += len(p_items)
+                            # Remove freshly fetched symbols from to_fetch
+                            fetched = {s for s, _ in p_items}
+                            to_fetch = [s for s in to_fetch if s not in fetched]
+                    except Exception as pe:
+                        print(f"[bg_refresh] priority fetch error: {pe}", flush=True)
+
                 chunk = to_fetch[i: i + CHUNK]
+                if not chunk:
+                    break
                 chunk_num = i // CHUNK + 1
                 print(f"[bg_refresh] chunk {chunk_num}: {len(chunk)} symbols…", flush=True)
                 try:
@@ -301,10 +324,11 @@ def _prewarm():
                 except Exception as e:
                     print(f"[bg_refresh] chunk {chunk_num} error: {type(e).__name__}: {e}", flush=True)
 
-                # Open the daytrade-picks gate after the first chunk (~40s, ~300 symbols ready)
-                # so users can analyze stocks immediately — chunk 2 fills in the remainder
+                # Open the gate after the first chunk (~40s, ~300 symbols ready).
+                # Also notify ohlcv_store so fetch() stops deferring live calls.
                 if not _bg_refresh_done:
                     _bg_refresh_done = True
+                    set_bg_refresh_complete(True)
                     print(f"[bg_refresh] gate opened after chunk {chunk_num} ({stored} symbols ready)", flush=True)
 
             print(f"[bg_refresh] complete — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
@@ -314,6 +338,7 @@ def _prewarm():
             # Guarantee gate is open regardless of outcome — partial data beats permanent 503
             if not _bg_refresh_done:
                 _bg_refresh_done = True
+                set_bg_refresh_complete(True)
                 print("[bg_refresh] gate opened (finally)", flush=True)
 
     _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
