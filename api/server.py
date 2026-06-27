@@ -126,6 +126,8 @@ def _build_analyze_val(result, quote, quote_source, data_source):
 
 def _cache_symbol(sym: str, period: str, df, data_source: str):
     """Build and store analyze + candles results for one symbol."""
+    if df is None or len(df) < 50:
+        return 0
     result = _engine.analyze(df, sym)
     quote, quote_source = fetch_quote_with_source(sym)
     analyze_val = _build_analyze_val(result, quote, quote_source, data_source)
@@ -218,10 +220,17 @@ def _prewarm():
     _prewarm_done = True
     print("[prewarm] done — /health now ok", flush=True)
 
-    # Kick off leaderboard computation now so it's ready before the first request.
-    # We start it in a daemon thread immediately after prewarm — the 20 core symbols
-    # are already in SQLite so fetch() will return instantly for all of them.
+    # Pre-compute leaderboard in the background so the first user request hits cache.
+    # Must wait for _bg_refresh_done (gate opens after chunk 1, ~40s) so all 20 core
+    # symbols are in SQLite before the walk-forward loops start — otherwise symbols
+    # not in prewarm's 10-symbol list return empty and score as null.
     def _prewarm_leaderboard():
+        # Poll for the gate — bg_refresh opens it after chunk 1 (~40s on Render)
+        deadline = _time.time() + 180  # give bg_refresh up to 3 min to open the gate
+        while not _bg_refresh_done and _time.time() < deadline:
+            _time.sleep(5)
+        if not _bg_refresh_done:
+            print("[prewarm] leaderboard: bg_refresh gate never opened, computing anyway", flush=True)
         for h in ("swing", "day", "month"):
             try:
                 _cached(f"leaderboard:{h}", ttl=3600, fn=lambda horizon=h: _compute_leaderboard(horizon))
@@ -593,7 +602,7 @@ def backtest(symbol: str = "AAPL", period: str = "1y", cash: float = 100_000):
 
     def _compute():
         df = fetch(sym, period=period, interval="1d")
-        if df.empty:
+        if df.empty or len(df) < 50:
             return None
         trader = PaperTrader(initial_cash=cash)
         return trader.run_backtest(df, sym)
