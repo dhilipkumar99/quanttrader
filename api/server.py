@@ -43,7 +43,6 @@ from api.quant.charts_db import (
     get_chart, get_charts_batch, get_sweep_status, run_sweep, sweep_is_stale, ensure_chart
 )
 from api.quant.ohlcv_store import _clean_yf_df, _db_put_many
-from api.quant.ohlcv_store import set_bg_refresh_complete, drain_priority_queue, request_priority_fetch
 from api.quant import finnhub_client as _fh
 
 app = FastAPI(title="QuantTrader API")
@@ -86,12 +85,9 @@ def _is_zero_signal_result(val) -> bool:
         and "error" not in val
     )
 
-# ── Pre-warm OHLCV cache for the most-requested symbols so the first
-#    /api/analyze call hits SQLite, not a live yfinance download ──────────────
+# ── Pre-warm OHLCV cache ───────────────────────────────────────────────────────
 _prewarm_done = False
-# Set True after _bg_refresh stores the full universe in SQLite.
-# daytrade-picks returns 503 until this is True so it never fires
-# 80 single-symbol yfinance downloads on an empty SQLite.
+# Alias kept for the /health endpoint — always True once prewarm finishes.
 _bg_refresh_done = False
 
 def _build_analyze_val(result, quote, quote_source, data_source):
@@ -153,24 +149,26 @@ def _cache_symbol(sym: str, period: str, df, data_source: str):
 
 def _prewarm():
     """
-    Guarantee _server_cache is populated for the 5 core symbols before
-    setting _prewarm_done=True. Two phases:
-      1. Fast: read from SQLite (sub-second if data exists)
-      2. Fallback: yfinance batch for any symbol not in SQLite
-         (Render's SQLite is wiped on every cold start — always empty)
-    Only after both phases succeed does /health return "ok", so the
-    frontend gate never opens into an empty cache.
+    On cold start: fetch exactly the 20 symbols needed for leaderboard + core UX.
+    Everything else is fetched on demand when a user actually requests it.
+    SQLite caches each symbol after first fetch so repeat requests are instant.
     """
-    global _prewarm_done
+    global _prewarm_done, _bg_refresh_done
     import yfinance as yf
     import pandas as pd
     from api.quant.ohlcv_store import _db_get, _db_put
 
-    _WARM = ["AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "SPY", "QQQ", "META", "GOOGL", "AMD"]
+    # 20 symbols: covers leaderboard + the most common user searches.
+    # This is the ONLY bulk download that happens at startup.
+    _WARM = list(dict.fromkeys([
+        "AAPL", "NVDA", "MSFT", "GOOGL", "META", "AMZN", "TSLA",
+        "AMD", "NFLX", "JPM", "BAC", "GS", "ORCL", "ADBE", "CRM",
+        "SPY", "QQQ", "XLK", "XLF", "COST",
+    ]))
     period = "1y"
     needs_fetch = []
 
-    # Phase 1 — SQLite fast path
+    # Phase 1 — serve from SQLite if already cached (sub-second)
     for sym in _WARM:
         try:
             cached = _db_get(sym, period, "1d")
@@ -181,22 +179,21 @@ def _prewarm():
             if df.empty or len(df) < 50:
                 needs_fetch.append(sym)
                 continue
-            n = _cache_symbol(sym, period, df, data_source)
-            print(f"[prewarm] {sym} ✓ SQLite ({n} candles)", flush=True)
+            _cache_symbol(sym, period, df, data_source)
+            print(f"[prewarm] {sym} ✓ SQLite", flush=True)
         except Exception as e:
             print(f"[prewarm] {sym} SQLite error: {e}", flush=True)
             needs_fetch.append(sym)
 
-    # Phase 2 — yfinance batch for anything SQLite didn't have
+    # Phase 2 — single batch download for anything not in SQLite
     if needs_fetch:
-        print(f"[prewarm] SQLite cold — fetching {needs_fetch} via yfinance…", flush=True)
+        print(f"[prewarm] fetching {len(needs_fetch)} symbols via yfinance…", flush=True)
         try:
             raw = yf.download(
                 tickers=needs_fetch, period=period, interval="1d",
                 group_by="ticker", auto_adjust=True, progress=False,
-                threads=False,  # avoid RuntimeError from concurrent yfinance downloads
+                threads=False,
             )
-            # yfinance ≥0.2.50 always returns (Ticker, Field) MultiIndex
             avail = set(raw.columns.get_level_values(0)) if isinstance(raw.columns, pd.MultiIndex) else set()
             for sym in needs_fetch:
                 try:
@@ -210,160 +207,27 @@ def _prewarm():
                     if df.empty or len(df) < 50:
                         continue
                     _db_put(sym, period, "1d", df, "yfinance")
-                    n = _cache_symbol(sym, period, df, "yfinance")
-                    print(f"[prewarm] {sym} ✓ yfinance ({n} candles)", flush=True)
+                    _cache_symbol(sym, period, df, "yfinance")
+                    print(f"[prewarm] {sym} ✓ yfinance", flush=True)
                 except Exception as e:
-                    print(f"[prewarm] {sym} yfinance parse error: {e}", flush=True)
+                    print(f"[prewarm] {sym} parse error: {e}", flush=True)
         except Exception as e:
-            print(f"[prewarm] yfinance batch failed: {e}", flush=True)
+            print(f"[prewarm] batch failed: {e}", flush=True)
 
     _prewarm_done = True
-    print("[prewarm] done — /health now ok", flush=True)
+    _bg_refresh_done = True  # no bulk refresh — live fetch available immediately
+    print("[prewarm] done — /health ok, live fetch enabled", flush=True)
 
-    # Pre-compute leaderboard in the background so the first user request hits cache.
-    # Must wait for _bg_refresh_done (gate opens after chunk 1, ~40s) so all 20 core
-    # symbols are in SQLite before the walk-forward loops start — otherwise symbols
-    # not in prewarm's 10-symbol list return empty and score as null.
+    # Pre-compute leaderboard now that all 20 symbols are in SQLite.
     def _prewarm_leaderboard():
-        # Poll for the gate — bg_refresh opens it after chunk 1 (~40s on Render)
-        deadline = _time.time() + 180  # give bg_refresh up to 3 min to open the gate
-        while not _bg_refresh_done and _time.time() < deadline:
-            _time.sleep(5)
-        if not _bg_refresh_done:
-            print("[prewarm] leaderboard: bg_refresh gate never opened, computing anyway", flush=True)
         for h in ("swing", "day", "month"):
             try:
                 _cached(f"leaderboard:{h}", ttl=3600, fn=lambda horizon=h: _compute_leaderboard(horizon))
-                print(f"[prewarm] leaderboard:{h} pre-computed", flush=True)
+                print(f"[prewarm] leaderboard:{h} ready", flush=True)
             except Exception as e:
                 print(f"[prewarm] leaderboard:{h} error: {e}", flush=True)
 
     _threading.Thread(target=_prewarm_leaderboard, daemon=True, name="prewarm-leaderboard").start()
-
-    # Background: batch-fetch the full trading universe into SQLite so daytrade-picks
-    # and analyze requests hit SQLite (instant) instead of live yfinance (slow).
-    # Strategy: 2 large chunks of ~300 symbols, threads=False, no inter-chunk sleep.
-    # Benchmarked: ~552/579 symbols in ~77s total (vs 50-chunk/5s-sleep = ~30 min).
-    def _bg_refresh():
-        global _bg_refresh_done
-        import yfinance as yf
-        from api.quant.ohlcv_store import _db_get
-        from api.quant.sp500 import SP500_SYMBOLS
-        from api.quant.nasdaq import NASDAQ_SYMBOLS
-
-        try:
-            period = "1y"
-            # Full universe: SP500 + NASDAQ, deduped
-            seen: set[str] = set()
-            universe: list[str] = []
-            for sym in list(SP500_SYMBOLS) + list(NASDAQ_SYMBOLS):
-                if sym not in seen:
-                    seen.add(sym)
-                    universe.append(sym)
-
-            # Skip symbols already fresh in SQLite (from prewarm)
-            to_fetch = [s for s in universe if _db_get(s, period, "1d") is None]
-            print(f"[bg_refresh] fetching {len(to_fetch)}/{len(universe)} symbols (2-chunk strategy)…", flush=True)
-
-            CHUNK = 300  # 2 passes covers ~579-symbol universe in ~80s total
-            stored = 0
-
-            def _download_chunk(syms: list[str], label: str) -> list[tuple[str, "pd.DataFrame"]]:
-                """Download a batch, falling back to 100-symbol sub-chunks on yfinance dict-mutation errors."""
-                try:
-                    raw = yf.download(
-                        tickers=syms, period=period, interval="1d",
-                        group_by="ticker", auto_adjust=True, progress=False,
-                        threads=False,
-                    )
-                    if raw.empty:
-                        return []
-                    items: list[tuple[str, "pd.DataFrame"]] = []
-                    if isinstance(raw.columns, pd.MultiIndex):
-                        available = set(raw.columns.get_level_values(0))
-                        for sym in syms:
-                            sym_u = sym.upper()
-                            if sym_u not in available:
-                                continue
-                            try:
-                                df = _clean_yf_df(raw[sym_u].copy())
-                                if not df.empty and len(df) >= 30:
-                                    items.append((sym_u, df))
-                            except Exception:
-                                pass
-                    else:
-                        sym_u = syms[0].upper()
-                        df = _clean_yf_df(raw.copy())
-                        if not df.empty and len(df) >= 30:
-                            items.append((sym_u, df))
-                    return items
-                except RuntimeError as e:
-                    if "dictionary changed size" in str(e) and len(syms) > 100:
-                        # yfinance internal dict mutation bug on large batches — split and retry
-                        print(f"[bg_refresh] {label}: dict-size bug, retrying as 100-symbol sub-chunks", flush=True)
-                        result: list[tuple[str, "pd.DataFrame"]] = []
-                        for j in range(0, len(syms), 100):
-                            sub = syms[j: j + 100]
-                            try:
-                                result.extend(_download_chunk(sub, f"{label}[{j//100}]"))
-                            except Exception as sub_e:
-                                print(f"[bg_refresh] sub-chunk error: {sub_e}", flush=True)
-                        return result
-                    raise
-
-            for i in range(0, len(to_fetch), CHUNK):
-                # Fix 2: drain priority queue — symbols the user has already searched
-                # get fetched first so they land in SQLite before the next retry.
-                priority = drain_priority_queue()
-                # Remove priority symbols from the pending bulk list to avoid
-                # double-fetching, then prepend them to the current chunk.
-                to_fetch_set = set(to_fetch[i:])
-                priority_new = [s for s in priority if s in to_fetch_set and _db_get(s, period, "1d") is None]
-                if priority_new:
-                    print(f"[bg_refresh] priority: fetching {priority_new} first", flush=True)
-                    try:
-                        p_items = _download_chunk(priority_new, "priority")
-                        if p_items:
-                            _db_put_many(p_items, period, "1d", "yfinance")
-                            stored += len(p_items)
-                            # Remove freshly fetched symbols from to_fetch
-                            fetched = {s for s, _ in p_items}
-                            to_fetch = [s for s in to_fetch if s not in fetched]
-                    except Exception as pe:
-                        print(f"[bg_refresh] priority fetch error: {pe}", flush=True)
-
-                chunk = to_fetch[i: i + CHUNK]
-                if not chunk:
-                    break
-                chunk_num = i // CHUNK + 1
-                print(f"[bg_refresh] chunk {chunk_num}: {len(chunk)} symbols…", flush=True)
-                try:
-                    items = _download_chunk(chunk, f"chunk {chunk_num}")
-                    if items:
-                        _db_put_many(items, period, "1d", "yfinance")
-                        stored += len(items)
-                    print(f"[bg_refresh] chunk {chunk_num}: stored {len(items)}/{len(chunk)}", flush=True)
-                except Exception as e:
-                    print(f"[bg_refresh] chunk {chunk_num} error: {type(e).__name__}: {e}", flush=True)
-
-                # Open the gate after the first chunk (~40s, ~300 symbols ready).
-                # Also notify ohlcv_store so fetch() stops deferring live calls.
-                if not _bg_refresh_done:
-                    _bg_refresh_done = True
-                    set_bg_refresh_complete(True)
-                    print(f"[bg_refresh] gate opened after chunk {chunk_num} ({stored} symbols ready)", flush=True)
-
-            print(f"[bg_refresh] complete — {stored}/{len(to_fetch)} symbols in SQLite", flush=True)
-        except Exception as e:
-            print(f"[bg_refresh] fatal error: {e}", flush=True)
-        finally:
-            # Guarantee gate is open regardless of outcome — partial data beats permanent 503
-            if not _bg_refresh_done:
-                _bg_refresh_done = True
-                set_bg_refresh_complete(True)
-                print("[bg_refresh] gate opened (finally)", flush=True)
-
-    _threading.Thread(target=_bg_refresh, daemon=True, name="bg-refresh").start()
 
 _threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
 
@@ -389,10 +253,8 @@ def _cached(key: str, ttl: float, fn):
         if age < ttl and not _is_zero_signal_result(val):
             return val   # fresh and valid
 
-        # Don't re-hammer bad tickers with _NO_DATA.
-        # During bg_refresh, SQLite is still being populated — cap block at 30s
-        # so symbols that failed due to yfinance contention retry sooner.
-        _no_data_block = 30 if not _bg_refresh_done else 300
+        # Don't re-hammer bad tickers. 60s cooldown after prewarm; 10s during.
+        _no_data_block = 10 if not _prewarm_done else 60
         if val is _NO_DATA and age < _no_data_block:
             return _NO_DATA
 
@@ -1357,13 +1219,10 @@ def daytrade_picks(limit: int = 20, universe: str = "sp500",
     if horizon not in HORIZONS:
         return JSONResponse({"error": f"horizon must be one of {list(HORIZONS)}"}, status_code=422)
 
-    # Refuse to scan before SQLite is populated — scanning 80–150 symbols via
-    # live yfinance (single-symbol per request) would blow through the 7s window.
-    if not _bg_refresh_done:
+    if not _prewarm_done:
         return JSONResponse(
-            {"error": "computing", "retry_after": 30,
-             "message": "Universe data loading — retry in 30s"},
-            status_code=503, headers={"Retry-After": "30"},
+            {"error": "computing", "retry_after": 5, "message": "Server warming up"},
+            status_code=503, headers={"Retry-After": "5"},
         )
 
     cache_key = f"daytrade_picks:{universe}:{limit}:{horizon}:{include_shorts}"

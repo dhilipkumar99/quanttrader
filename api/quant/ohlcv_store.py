@@ -855,42 +855,6 @@ _hot_cache: dict[str, tuple[pd.DataFrame, str, float]] = {}
 _hot_lock = threading.Lock()
 _HOT_TTL = 600  # 10 minutes — must outlive the Render prewarm window
 
-# ── bg_refresh coordination ───────────────────────────────────────────────────
-# Set True by server.py once bg_refresh has populated SQLite with enough symbols.
-# While False, fetch() skips live yfinance tiers so user requests don't compete
-# with the bulk download for the same rate-limit bucket.
-_bg_refresh_complete = False
-
-# Priority queue: symbols the user has explicitly requested that aren't in
-# SQLite yet. bg_refresh drains this before each chunk so user-requested
-# symbols land in SQLite within seconds rather than waiting for their batch.
-_priority_queue: list[str] = []
-_priority_lock = threading.Lock()
-
-
-def set_bg_refresh_complete(done: bool) -> None:
-    """Called by server.py when bg_refresh finishes (or opens its gate)."""
-    global _bg_refresh_complete
-    _bg_refresh_complete = done
-
-
-def request_priority_fetch(symbol: str) -> None:
-    """
-    Signal that a user has requested this symbol. bg_refresh will fetch it
-    in the next available slot ahead of the normal bulk queue.
-    """
-    sym = symbol.upper()
-    with _priority_lock:
-        if sym not in _priority_queue:
-            _priority_queue.append(sym)
-
-
-def drain_priority_queue() -> list[str]:
-    """Return and clear all pending priority symbols."""
-    with _priority_lock:
-        syms = list(_priority_queue)
-        _priority_queue.clear()
-    return syms
 
 
 _PERIOD_BARS: dict[str, int] = {
@@ -973,18 +937,6 @@ def fetch(symbol: str, period: str = "1y", interval: str = "1d") -> tuple[pd.Dat
                 _hot_cache[hot_key] = (df, source, time.time())
             return df.copy(), f"sqlite_{source}"
         # Too few bars — fall through to live fetch; don't cache this stub
-
-    # ── bg_refresh guard ──
-    # While bg_refresh is still populating SQLite, skip live yfinance tiers.
-    # Concurrent user requests + bulk batch downloads share the same Yahoo
-    # rate-limit bucket — firing individual requests during the bulk download
-    # causes 401s for both. Instead, enqueue the symbol for priority handling
-    # in the next bg_refresh chunk (typically within 5–15s) and return empty
-    # so _cached() returns 503 and the client retries.
-    if not _bg_refresh_complete and interval == "1d":
-        request_priority_fetch(sym)
-        log.debug("bg_refresh in progress — deferring live fetch for %s", sym)
-        return pd.DataFrame(), "none"
 
     # ── Tier 3: Yahoo Finance chart v8 JSON (query1 + query2 round-robin) ──
     # Two independent Yahoo servers, no crumb/session needed, works on all symbols.
