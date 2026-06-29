@@ -33,6 +33,10 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
     if (s && s !== symbol) onSymbolChange(s);
   };
 
+  const handleBlur = () => {
+    setInput(symbol);
+  };
+
   const TABS: { id: Tab; label: string; key: string }[] = [
     { id: "picks",     label: "Best Picks", key: "K" },
     { id: "analysis",  label: "Analysis",   key: "A" },
@@ -110,7 +114,7 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
           value={input}
           onChange={e => setInput(e.target.value.toUpperCase())}
           onKeyDown={e => e.key === "Enter" && submit()}
-          onBlur={submit}
+          onBlur={handleBlur}
           style={{
             background: "rgba(255,255,255,0.08)",
             border: "1px solid rgba(255,255,255,0.15)",

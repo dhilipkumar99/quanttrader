@@ -146,17 +146,24 @@ function AppInner() {
   // Render free tier: sleeps after ~15 min idle. Use 13 min to be safe.
   const RENDER_IDLE_MS = 13 * 60 * 1000;
 
-  const startWake = useCallback(() => {
+  const startWake = useCallback((refetch: boolean) => {
     setServerReady(false);
     wakeRender(300_000).then(ok => {
       setServerReady(true);
-      if (!ok) toast("Server unreachable — data may be unavailable", "error");
+      if (!ok) {
+        toast("Server unreachable — data may be unavailable", "error");
+      } else if (refetch) {
+        // Server was asleep and is now back — re-fetch so stale data gets refreshed.
+        // setLoading(true) here ensures no EmptyState flash while the new fetch runs.
+        setLoading(true);
+        setAnalysis(null);
+      }
     });
-  }, []);
+  }, [setLoading, setAnalysis]);
 
-  // Initial wake on mount
+  // Initial wake on mount — no refetch needed (useEffect below fires once serverReady=true)
   useEffect(() => {
-    startWake();
+    startWake(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -169,7 +176,9 @@ function AppInner() {
         const hiddenMs = hiddenAtRef.current ? Date.now() - hiddenAtRef.current : 0;
         hiddenAtRef.current = null;
         if (hiddenMs >= RENDER_IDLE_MS) {
-          startWake();
+          // Pass refetch=true so data is refreshed after a long sleep.
+          // serverReady flip false→true re-triggers the fetch useEffect below.
+          startWake(true);
         }
       }
     };
@@ -203,6 +212,7 @@ function AppInner() {
       // treat it as still-computing and retry rather than displaying broken output.
       if (data.composite_signal === 0 && data.composite_confidence === 0 && (!data.signals || data.signals.length === 0)) {
         if (attempt < 4) {
+          // Do NOT call setLoading(false) — keep spinner visible between retries
           setTimeout(() => fetchAnalysis(sym, period, attempt + 1), 3000);
           return;
         }
@@ -216,17 +226,19 @@ function AppInner() {
         `${sym} ready · Data: ${src}`,
         isCached ? "info" : isTD ? "info" : "success"
       );
+      setLoading(false);
     } catch (e: unknown) {
       if (e instanceof ComputingError && attempt < 4) {
-        // Server is computing in background — stay in loading state and retry
+        // Server is computing in background — keep spinner visible, retry after hint delay
         const delay = (e.retryAfter ?? 3) * 1000;
         setTimeout(() => fetchAnalysis(sym, period, attempt + 1), delay);
-        return; // keep loading spinner, no error toast
+        return;
       }
       const msg = e instanceof Error ? e.message : "Unknown error";
       const friendly = msg.includes("timeout") ? `${sym} timed out — try again` : `${sym}: ${msg}`;
       setError(friendly); toast(friendly, "error");
-    } finally { setLoading(false); }
+      setLoading(false);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setLoading, setError, setAnalysis]);
 
@@ -279,9 +291,9 @@ function AppInner() {
   }, [pinnedSymbols, serverReady]);
 
   const handleSymbol = useCallback((sym: string) => {
-    setActiveSymbol(sym); setAnalysis(null); setBacktest(null);
+    setActiveSymbol(sym); setAnalysis(null); setBacktest(null); setLoading(true);
     router.replace(`/?symbol=${sym}`, { scroll: false });
-  }, [setActiveSymbol, setAnalysis, setBacktest, router]);
+  }, [setActiveSymbol, setAnalysis, setBacktest, setLoading, router]);
 
   const handleTabChange = useCallback((tab: Tab) => {
     setActiveTab(tab);
@@ -310,7 +322,7 @@ function AppInner() {
         symbol={activeSymbol}
         onSymbolChange={handleSymbol}
         period={activePeriod}
-        onPeriodChange={(p) => { setActivePeriod(p); setAnalysis(null); }}
+        onPeriodChange={(p) => { setActivePeriod(p); setAnalysis(null); setLoading(true); }}
         activeTab={activeTab as Tab}
         onTabChange={handleTabChange}
         sidebarCollapsed={sidebarCollapsed}
