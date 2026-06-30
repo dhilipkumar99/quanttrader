@@ -42,11 +42,8 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
     { id: "analysis",  label: "Analysis",   key: "A" },
     { id: "intraday",  label: "Intraday",   key: "I" },
     { id: "compare",   label: "Compare",    key: "C" },
-    { id: "scanner",   label: "Scanner",    key: "N" },
     { id: "market",    label: "Market",     key: "M" },
     { id: "trading",   label: "Trade",      key: "T" },
-    { id: "agent",     label: "Agent",      key: "G" },
-    { id: "simulator", label: "Backtest",   key: "S" },
     { id: "portfolio", label: "Portfolio",  key: "P" },
   ];
 

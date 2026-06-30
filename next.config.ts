@@ -33,14 +33,12 @@ const nextConfig: NextConfig = {
     ];
   },
 
-  // Redirect bare /analysis to home
   async redirects() {
     return [
-      {
-        source: "/analysis",
-        destination: "/",
-        permanent: false,
-      },
+      { source: "/analysis",     destination: "/",                   permanent: false },
+      { source: "/about",        destination: "/learn#about",        permanent: true  },
+      { source: "/how-it-works", destination: "/learn#how-it-works", permanent: true  },
+      { source: "/glossary",     destination: "/learn#glossary",     permanent: true  },
     ];
   },
 };

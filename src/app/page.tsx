@@ -35,7 +35,7 @@ import { StatusBar } from "@/components/ui/StatusBar";
 import { PriceChart } from "@/components/charts/PriceChart";
 import { AlertTriangle, Database, RefreshCw } from "lucide-react";
 
-export type Tab = "analysis" | "simulator" | "portfolio" | "market" | "trading" | "scanner" | "compare" | "agent" | "picks" | "intraday";
+export type Tab = "analysis" | "portfolio" | "market" | "trading" | "compare" | "picks" | "intraday";
 
 // Full-width TwelveData line chart used as fallback while candlestick data loads
 function TdSparkFull({ candles }: { candles: ChartCandle[] }) {
@@ -433,25 +433,23 @@ function AppInner() {
                 ) : null}
               </>
             )}
-            {activeTab === "simulator" && (
-              <SimulatorPanel result={backtest} loading={backtestLoading} onRun={runBacktest} symbol={activeSymbol} />
+            {activeTab === "portfolio" && (
+              <PortfolioTabView
+                backtest={backtest}
+                backtestLoading={backtestLoading}
+                onRunBacktest={runBacktest}
+                activeSymbol={activeSymbol}
+              />
             )}
-            {activeTab === "portfolio" && <PortfolioPanel />}
             {activeTab === "market" && (
-              <MarketOverviewPanel
+              <MarketTabView
                 onSelectSymbol={handleSymbol}
                 onGoToAnalysis={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
                 serverReady={serverReady}
               />
             )}
             {activeTab === "trading" && (
-              <TradingPanel defaultSymbol={activeSymbol} onSelectSymbol={handleSymbol} />
-            )}
-            {activeTab === "scanner" && (
-              <SP500Scanner
-                onSelectSymbol={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
-                serverReady={serverReady}
-              />
+              <TradingTabView defaultSymbol={activeSymbol} onSelectSymbol={handleSymbol} />
             )}
             {activeTab === "compare" && (
               <ComparisonPanel
@@ -459,7 +457,6 @@ function AppInner() {
                 period={activePeriod}
               />
             )}
-            {activeTab === "agent" && <AgentPanel />}
             {activeTab === "intraday" && <IntradayPanel />}
             {activeTab === "picks" && (
               beginnerMode
@@ -480,13 +477,10 @@ function AppInner() {
       <KeyboardShortcuts
         handlers={{
           a: () => handleTabChange("analysis"),
-          s: () => handleTabChange("simulator"),
           p: () => handleTabChange("portfolio"),
           m: () => handleTabChange("market"),
           t: () => handleTabChange("trading"),
-          n: () => handleTabChange("scanner"),
           c: () => handleTabChange("compare"),
-          g: () => handleTabChange("agent"),
           k: () => handleTabChange("picks"),
           i: () => handleTabChange("intraday"),
         }}
@@ -550,6 +544,74 @@ function EmptyState({ onSymbol }: { onSymbol: (s: string) => void }) {
       <div style={{ width: "100%", maxWidth: "900px" }}>
         <LeaderboardPanel onSelectSymbol={onSymbol} />
       </div>
+    </div>
+  );
+}
+
+// ── Consolidated tab views ─────────────────────────────────────────────────────
+
+const SUB_TAB_STYLE = (active: boolean) => ({
+  fontFamily: "'Palatino Linotype', Palatino, serif" as const,
+  fontSize: "11px" as const, fontWeight: (active ? 700 : 400) as 700 | 400,
+  letterSpacing: "0.1em" as const, textTransform: "uppercase" as const,
+  padding: "4px 16px", cursor: "pointer" as const,
+  background: active ? "var(--blue)" : "var(--bg-raised)",
+  color: active ? "#fff" : "var(--text-muted)",
+  border: `1px solid ${active ? "var(--blue)" : "var(--border)"}`,
+});
+
+function SubTabBar({ tabs, active, onChange }: { tabs: string[]; active: string; onChange: (t: string) => void }) {
+  return (
+    <div style={{ display: "flex", gap: "4px", marginBottom: "12px" }}>
+      {tabs.map(t => (
+        <button key={t} style={SUB_TAB_STYLE(active === t)} onClick={() => onChange(t)}>{t}</button>
+      ))}
+    </div>
+  );
+}
+
+function MarketTabView({ onSelectSymbol, onGoToAnalysis, serverReady }: {
+  onSelectSymbol: (s: string) => void;
+  onGoToAnalysis: (s: string) => void;
+  serverReady: boolean;
+}) {
+  const [sub, setSub] = useState<"overview" | "scanner">("overview");
+  return (
+    <div>
+      <SubTabBar tabs={["Overview", "Scanner"]} active={sub === "overview" ? "Overview" : "Scanner"} onChange={t => setSub(t === "Overview" ? "overview" : "scanner")} />
+      {sub === "overview" && (
+        <MarketOverviewPanel onSelectSymbol={onSelectSymbol} onGoToAnalysis={onGoToAnalysis} serverReady={serverReady} />
+      )}
+      {sub === "scanner" && (
+        <SP500Scanner onSelectSymbol={(sym) => { onSelectSymbol(sym); onGoToAnalysis(sym); }} serverReady={serverReady} />
+      )}
+    </div>
+  );
+}
+
+function TradingTabView({ defaultSymbol, onSelectSymbol }: { defaultSymbol: string; onSelectSymbol: (s: string) => void }) {
+  const [sub, setSub] = useState<"manual" | "agent">("manual");
+  return (
+    <div>
+      <SubTabBar tabs={["Manual", "Auto-Agent"]} active={sub === "manual" ? "Manual" : "Auto-Agent"} onChange={t => setSub(t === "Manual" ? "manual" : "agent")} />
+      {sub === "manual" && <TradingPanel defaultSymbol={defaultSymbol} onSelectSymbol={onSelectSymbol} />}
+      {sub === "agent"  && <AgentPanel />}
+    </div>
+  );
+}
+
+function PortfolioTabView({ backtest, backtestLoading, onRunBacktest, activeSymbol }: {
+  backtest: import("@/types/quant").BacktestResult | null;
+  backtestLoading: boolean;
+  onRunBacktest: (cash: number, period: string) => Promise<void>;
+  activeSymbol: string;
+}) {
+  const [sub, setSub] = useState<"portfolio" | "backtest">("portfolio");
+  return (
+    <div>
+      <SubTabBar tabs={["Portfolio", "Backtest"]} active={sub === "portfolio" ? "Portfolio" : "Backtest"} onChange={t => setSub(t === "Portfolio" ? "portfolio" : "backtest")} />
+      {sub === "portfolio" && <PortfolioPanel />}
+      {sub === "backtest"  && <SimulatorPanel result={backtest} loading={backtestLoading} onRun={onRunBacktest} symbol={activeSymbol} />}
     </div>
   );
 }

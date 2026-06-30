@@ -4,22 +4,19 @@ import type { Tab } from "@/app/page";
 import { useTrader } from "@/store/trader";
 import { cn, fmtPct } from "@/lib/utils";
 import {
-  BarChart2, Globe, Zap, FlaskConical, LayoutDashboard,
-  Search, Info, BookOpen, Plus, X, ChevronDown, ChevronUp, GitCompare, Bot, Crosshair, Activity,
+  BarChart2, Globe, Zap, LayoutDashboard,
+  Info, BookOpen, Plus, X, GitCompare, Crosshair, Activity,
 } from "lucide-react";
 import Link from "next/link";
 
 const NAV_ITEMS: { id: Tab; label: string; Icon: React.FC<{ className?: string }>; key: string }[] = [
-  { id: "picks",     label: "Best Picks", Icon: Crosshair,      key: "K" },
-  { id: "analysis",  label: "Analysis",   Icon: BarChart2,      key: "A" },
-  { id: "compare",   label: "Compare",    Icon: GitCompare,     key: "C" },
-  { id: "scanner",   label: "Scanner",    Icon: Search,         key: "N" },
-  { id: "market",    label: "Market",     Icon: Globe,          key: "M" },
-  { id: "trading",   label: "Trade",      Icon: Zap,            key: "T" },
-  { id: "agent",     label: "Agent",      Icon: Bot,            key: "G" },
-  { id: "simulator", label: "Backtest",   Icon: FlaskConical,   key: "S" },
-  { id: "portfolio", label: "Portfolio",  Icon: LayoutDashboard, key: "P" },
+  { id: "picks",     label: "Best Picks", Icon: Crosshair,       key: "K" },
+  { id: "analysis",  label: "Analysis",   Icon: BarChart2,       key: "A" },
   { id: "intraday",  label: "Intraday",   Icon: Activity,        key: "I" },
+  { id: "compare",   label: "Compare",    Icon: GitCompare,      key: "C" },
+  { id: "market",    label: "Market",     Icon: Globe,           key: "M" },
+  { id: "trading",   label: "Trade",      Icon: Zap,             key: "T" },
+  { id: "portfolio", label: "Portfolio",  Icon: LayoutDashboard, key: "P" },
 ];
 
 interface Props {
@@ -128,9 +125,8 @@ export function Sidebar({ collapsed, activeTab, onTabChange, onSelectSymbol }: P
       {!collapsed && (
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", padding: "4px 0" }}>
           {[
-            { href: "/how-it-works", label: "How It Works", Icon: BookOpen },
-            { href: "/glossary",     label: "Glossary",     Icon: BookOpen },
-            { href: "/about",        label: "About",        Icon: Info },
+            { href: "/learn",  label: "Learn",  Icon: BookOpen },
+            { href: "/learn#about", label: "About", Icon: Info },
           ].map(({ href, label, Icon }) => (
             <Link
               key={href}

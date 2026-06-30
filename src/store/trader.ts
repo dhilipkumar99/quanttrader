@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { AnalysisResult, BacktestResult, WatchlistItem } from "@/types/quant";
 
-export type AppTab = "analysis" | "simulator" | "portfolio" | "market" | "trading" | "scanner" | "compare" | "agent" | "picks" | "intraday";
+export type AppTab = "analysis" | "portfolio" | "market" | "trading" | "compare" | "picks" | "intraday";
 
 export interface PortfolioEntry {
   symbol: string;
