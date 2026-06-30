@@ -444,7 +444,7 @@ function AppInner() {
             {activeTab === "market" && (
               <MarketTabView
                 onSelectSymbol={handleSymbol}
-                onGoToAnalysis={(sym) => { handleSymbol(sym); handleTabChange("analysis"); }}
+                onGoToAnalysisTabOnly={() => handleTabChange("analysis")}
                 serverReady={serverReady}
               />
             )}
@@ -570,9 +570,9 @@ function SubTabBar({ tabs, active, onChange }: { tabs: string[]; active: string;
   );
 }
 
-function MarketTabView({ onSelectSymbol, onGoToAnalysis, serverReady }: {
+function MarketTabView({ onSelectSymbol, onGoToAnalysisTabOnly, serverReady }: {
   onSelectSymbol: (s: string) => void;
-  onGoToAnalysis: (s: string) => void;
+  onGoToAnalysisTabOnly: () => void;
   serverReady: boolean;
 }) {
   const [sub, setSub] = useState<"overview" | "scanner">("overview");
@@ -580,10 +580,13 @@ function MarketTabView({ onSelectSymbol, onGoToAnalysis, serverReady }: {
     <div>
       <SubTabBar tabs={["Overview", "Scanner"]} active={sub === "overview" ? "Overview" : "Scanner"} onChange={t => setSub(t === "Overview" ? "overview" : "scanner")} />
       {sub === "overview" && (
-        <MarketOverviewPanel onSelectSymbol={onSelectSymbol} onGoToAnalysis={onGoToAnalysis} serverReady={serverReady} />
+        // MarketOverviewPanel calls onSelectSymbol AND onGoToAnalysis separately in handleSelect.
+        // onGoToAnalysis must only switch tab — onSelectSymbol already handles the symbol fetch.
+        <MarketOverviewPanel onSelectSymbol={onSelectSymbol} onGoToAnalysis={(_sym) => onGoToAnalysisTabOnly()} serverReady={serverReady} />
       )}
       {sub === "scanner" && (
-        <SP500Scanner onSelectSymbol={(sym) => { onSelectSymbol(sym); onGoToAnalysis(sym); }} serverReady={serverReady} />
+        // SP500Scanner has a single onSelectSymbol — we handle symbol + tab switch together.
+        <SP500Scanner onSelectSymbol={(sym) => { onSelectSymbol(sym); onGoToAnalysisTabOnly(); }} serverReady={serverReady} />
       )}
     </div>
   );
