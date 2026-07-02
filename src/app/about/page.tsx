@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "About – QuantTrader",
-  description: "Learn how QuantTrader's ML-powered quant engine works and what makes it different.",
+  description: "QuantTrader gives every trader AI-powered buy/sell signals with plain-English explanations — no finance degree required.",
 };
 
 export default function AboutPage() {
@@ -28,8 +28,7 @@ export default function AboutPage() {
         <section className="text-center space-y-3">
           <h1 className="text-4xl font-black text-zinc-100">About QuantTrader</h1>
           <p className="text-lg text-zinc-400 max-w-xl mx-auto leading-relaxed">
-            An open-source, institutional-grade quant trading platform powered by machine learning —
-            built for everyone from beginners to professional traders.
+            We believe every trader — beginner or experienced — deserves the same tools that professional trading firms use. So we built them, made them easy to understand, and made them free.
           </p>
         </section>
 
@@ -37,23 +36,23 @@ export default function AboutPage() {
           {[
             {
               icon: Brain,
-              title: "Machine Learning Core",
-              body: "A Gradient Boosted Machine ensemble trained with walk-forward validation learns from 14 price and volume features to produce high-confidence trade signals.",
+              title: "Four AI Models, One Clear Signal",
+              body: "Four independent AI models each analyse the stock from a different angle. Their votes are combined into one clear Buy / Sell / Hold signal — with a confidence score so you know how strongly the AI believes it.",
             },
             {
               icon: Shield,
-              title: "Risk-First Design",
-              body: "Half-Kelly criterion position sizing and a CVaR gate mean the system never bets more than the math justifies. Your capital is protected first, returns second.",
+              title: "Built to Protect Your Money",
+              body: "Before showing you how much to invest, the system checks risk first. If the math says the trade is too risky, it tells you to skip or size down. Your capital is protected before returns are considered.",
             },
             {
               icon: Zap,
-              title: "Real-Time Data",
-              body: "Prices and indicators refresh directly from Yahoo Finance, giving you accurate, up-to-date analysis on thousands of tickers.",
+              title: "Live Market Data",
+              body: "Signals update from live market data so you're always working with what's happening right now, not yesterday's stale information.",
             },
             {
               icon: TrendingUp,
-              title: "Paper Simulator",
-              body: "Test every strategy on real historical data before committing a single dollar. See realistic slippage, commissions, drawdowns, and win rates.",
+              title: "Test Before You Risk Real Money",
+              body: "Run any strategy against years of real historical data. See wins, losses, drawdowns, and returns — so you build confidence before trading with real capital.",
             },
           ].map(({ icon: Icon, title, body }) => (
             <div key={title} className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-5 space-y-2">
@@ -67,26 +66,23 @@ export default function AboutPage() {
         </section>
 
         <section className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-6 space-y-3">
-          <h2 className="text-xl font-bold text-zinc-100">How We're Different</h2>
+          <h2 className="text-xl font-bold text-zinc-100">Why QuantTrader Is Different</h2>
           <p className="text-sm text-zinc-400 leading-relaxed">
-            Most retail trading tools are glorified chart-drawing apps. QuantTrader brings institutional quant research
-            methodologies — regime detection, bootstrap Monte Carlo simulation, ADV-normalised slippage — to retail investors.
-            Every design decision traces back to peer-reviewed quant finance literature, not gut feeling.
+            Most trading apps show you charts and leave you to figure out what they mean. QuantTrader goes further: it tells you what the signal means, what to do about it, exactly how much to invest, and where to put your stop-loss. The same rigorous analysis used by professional quant funds, translated into plain English for everyone.
           </p>
           <p className="text-sm text-zinc-400 leading-relaxed">
-            <strong className="text-zinc-200">We do not manage money.</strong> We provide analysis tools only.
-            Always consult a licensed financial advisor before making investment decisions.
+            <strong className="text-zinc-200">Important:</strong> QuantTrader is an analysis and education tool, not a licensed financial advisor. Always do your own research and never trade more than you can afford to lose.
           </p>
         </section>
 
         <section className="text-center space-y-3">
-          <h2 className="text-xl font-bold text-zinc-100">Ready to dive in?</h2>
+          <h2 className="text-xl font-bold text-zinc-100">Ready to find your next trade?</h2>
           <Link
             href="/"
             className="inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition-all"
           >
             <BarChart2 className="h-4 w-4" />
-            Open the App
+            Open QuantTrader
           </Link>
         </section>
       </main>

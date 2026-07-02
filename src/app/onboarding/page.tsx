@@ -174,7 +174,7 @@ function OnboardingInner() {
             </span>
           </div>
           <p style={{ fontFamily: SERIF, fontSize: "13px", color: "var(--text-muted)" }}>
-            Let&apos;s set up your profile so the system works for your situation.
+            Answer 6 quick questions so we can personalise your signals and position sizes.
           </p>
         </div>
 
@@ -226,7 +226,7 @@ function OnboardingInner() {
               How much are you trading with?
             </h2>
             <p style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
-              This sets your position sizing defaults. You can change it anytime.
+              We use this to calculate exactly how many dollars to put into each trade. You can update it anytime.
             </p>
             <div style={{ position: "relative", marginBottom: "8px" }}>
               <span style={{
@@ -276,30 +276,30 @@ function OnboardingInner() {
         {step === 1 && (
           <div>
             <h2 style={{ fontFamily: DISPLAY, fontSize: "18px", fontWeight: 700, color: "var(--text-primary)", marginBottom: "6px" }}>
-              What&apos;s your risk tolerance?
+              How comfortable are you with risk?
             </h2>
             <p style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
-              This controls position sizing and signal confidence thresholds.
+              This controls how much of your account we suggest putting into each trade.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <OptionCard
                 selected={risk === "conservative"}
                 onClick={() => setRisk("conservative")}
-                title="Conservative"
-                description="Smaller positions (up to 5% per trade), higher confidence bar (80%). Prioritises capital preservation over returns."
+                title="Play It Safe"
+                description="Small positions — up to 5% per trade. We only suggest trades when the AI is very confident (80%+). Capital protection is the priority."
               />
               <OptionCard
                 selected={risk === "moderate"}
                 onClick={() => setRisk("moderate")}
-                title="Moderate"
-                badge="Recommended"
-                description="Balanced positions (up to 12% per trade), 70% confidence threshold. Good risk-adjusted returns without excessive exposure."
+                title="Balanced"
+                badge="Most popular"
+                description="Medium positions — up to 12% per trade. A healthy balance between growing your money and protecting it."
               />
               <OptionCard
                 selected={risk === "aggressive"}
                 onClick={() => setRisk("aggressive")}
-                title="Aggressive"
-                description="Larger positions (up to 20% per trade), 60% confidence threshold. Higher potential returns — and higher potential losses."
+                title="Go for Growth"
+                description="Larger positions — up to 20% per trade. More upside potential, but also more downside. Only suitable if you're comfortable with larger swings."
               />
             </div>
           </div>
@@ -309,29 +309,29 @@ function OnboardingInner() {
         {step === 2 && (
           <div>
             <h2 style={{ fontFamily: DISPLAY, fontSize: "18px", fontWeight: 700, color: "var(--text-primary)", marginBottom: "6px" }}>
-              How experienced are you?
+              How much trading experience do you have?
             </h2>
             <p style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
-              Beginners start in a simplified view. You can switch anytime from the top bar.
+              New traders start in Simple View — just the signal and what to do. You can switch anytime.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <OptionCard
                 selected={experience === "beginner"}
                 onClick={() => setExp("beginner")}
-                title="Beginner"
-                description="I'm new to trading or just getting started. Show me the essentials: buy/sell/hold, a plain-English explanation, and how much to invest."
+                title="Just Getting Started"
+                description="I'm new to trading or just learning. Show me the bottom line: should I buy, sell, or hold — and how much to invest."
               />
               <OptionCard
                 selected={experience === "intermediate"}
                 onClick={() => setExp("intermediate")}
-                title="Intermediate"
-                description="I understand basic indicators (RSI, MACD) and have made trades before. I want to see signals with context."
+                title="Some Experience"
+                description="I've made trades before and know the basics (buy low, sell high, stop-losses). I want to see the signal plus a bit more context."
               />
               <OptionCard
                 selected={experience === "advanced"}
                 onClick={() => setExp("advanced")}
-                title="Advanced"
-                description="I'm comfortable with quant concepts, Kelly criterion, regime detection, and walk-forward backtesting."
+                title="Experienced Trader"
+                description="I know technical analysis and want to see all the data — indicators, risk metrics, probability scores, the works."
               />
             </div>
           </div>
@@ -341,30 +341,30 @@ function OnboardingInner() {
         {step === 3 && (
           <div>
             <h2 style={{ fontFamily: DISPLAY, fontSize: "18px", fontWeight: 700, color: "var(--text-primary)", marginBottom: "6px" }}>
-              What&apos;s your primary goal?
+              What are you trying to do with this account?
             </h2>
             <p style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
-              This shapes which signal horizons and metrics are emphasised.
+              This tells us which types of trades to prioritise for you.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <OptionCard
                 selected={goal === "income"}
                 onClick={() => setGoal("income")}
-                title="Income"
-                description="I want to generate regular returns from short-term trades. Day trades and swing trades are my focus."
+                title="Make money regularly"
+                description="I want to take advantage of short-term price moves and generate returns week by week through day trades and swing trades."
               />
               <OptionCard
                 selected={goal === "growth"}
                 onClick={() => setGoal("growth")}
-                title="Growth"
+                title="Grow my account over time"
                 badge="Most common"
-                description="I want to grow my portfolio over months. Swing and monthly signals with strong momentum are what I need."
+                description="I want my money to grow steadily over months. Fewer trades, but higher quality setups with stronger conviction."
               />
               <OptionCard
                 selected={goal === "preservation"}
                 onClick={() => setGoal("preservation")}
-                title="Capital Preservation"
-                description="Protecting what I have is the priority. I only trade high-conviction setups and size positions very conservatively."
+                title="Protect what I have"
+                description="Keeping my capital safe is the main goal. I only want to trade when the AI is very confident, and I want to risk as little as possible per trade."
               />
             </div>
           </div>
@@ -374,10 +374,10 @@ function OnboardingInner() {
         {step === 4 && (
           <div>
             <h2 style={{ fontFamily: DISPLAY, fontSize: "18px", fontWeight: 700, color: "var(--text-primary)", marginBottom: "6px" }}>
-              Do you want to connect a broker?
+              Do you want to place trades automatically?
             </h2>
             <p style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
-              A broker lets the agent place trades automatically. We use Alpaca — it&apos;s free and offers paper trading (fake money) so you can test risk-free.
+              Connect Alpaca (free) to let the AI place trades for you. You can start with paper trading — fake money — so there&apos;s zero risk while you learn how it works.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <button
@@ -393,10 +393,10 @@ function OnboardingInner() {
                 <Link2 size={22} style={{ color: brokerConnected ? "#1A6B4A" : "var(--text-muted)", flexShrink: 0 }} />
                 <div>
                   <div style={{ fontFamily: SERIF, fontSize: "14px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "4px" }}>
-                    Yes — I have (or will set up) Alpaca
+                    Yes — connect Alpaca and let the AI trade for me
                   </div>
                   <div style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                    Enter your Alpaca API keys in the Trade tab after setup. Paper trading uses fake money — your real money is always safe.
+                    Start with paper trading (fake money) to see how it performs risk-free. Connect your Alpaca API keys in the Trade tab after setup.
                   </div>
                 </div>
               </button>
@@ -413,10 +413,10 @@ function OnboardingInner() {
                 <Link2Off size={22} style={{ color: !brokerConnected ? "var(--blue)" : "var(--text-muted)", flexShrink: 0 }} />
                 <div>
                   <div style={{ fontFamily: SERIF, fontSize: "14px", fontWeight: 600, color: "var(--text-primary)", marginBottom: "4px" }}>
-                    Not yet — just show me signals
+                    Not yet — just show me the signals
                   </div>
                   <div style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                    You&apos;ll see buy/sell/hold signals and position sizes. The agent will tell you what it would do without placing any real orders.
+                    You&apos;ll see buy/sell/hold signals, position sizes, and trade plans — but the AI won&apos;t place any real orders. You stay in control.
                   </div>
                 </div>
               </button>
@@ -440,10 +440,10 @@ function OnboardingInner() {
         {step === 5 && (
           <div>
             <h2 style={{ fontFamily: DISPLAY, fontSize: "18px", fontWeight: 700, color: "var(--text-primary)", marginBottom: "6px" }}>
-              Where should we send trade alerts?
+              Want trade alerts sent to your inbox?
             </h2>
             <p style={{ fontFamily: SERIF, fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
-              Optional but strongly recommended. You&apos;ll get an email every time the agent places a trade and a morning brief each day. We never share your email.
+              Optional but highly recommended. Get notified the moment the AI spots a trade opportunity — even when you&apos;re away from the screen. We never share or sell your email.
             </p>
             <div style={{ position: "relative", marginBottom: "12px" }}>
               <Mail size={16} style={{

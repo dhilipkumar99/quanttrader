@@ -132,7 +132,7 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
   // ── Step 1 — Stop loss commitment ────────────────────────────────────
   const stopStep: Step = {
     num: 1, icon: <OctagonX className="h-3.5 w-3.5" />,
-    title: "Before anything: decide your exit",
+    title: "Decide your exit before you enter",
     status: sig === 0 ? "info" : "stop",
     body: (
       <div>
@@ -202,9 +202,9 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
     hardFail ? "stop" : softWarn ? "caution" : "go";
 
   const statusLabel =
-    overallStatus === "go"      ? "✓ TRADE IT" :
-    overallStatus === "caution" ? "⚠ PROCEED WITH CAUTION" :
-    "✕ SKIP THIS TRADE";
+    overallStatus === "go"      ? "✓ Good Setup — Here's Your Plan" :
+    overallStatus === "caution" ? "⚠ Trade With Caution — Read the Steps" :
+    "✕ Skip This Trade — Here's Why";
   const statusAccent =
     overallStatus === "go" ? C.green : overallStatus === "caution" ? C.amber : C.red;
   const statusBg =
@@ -237,13 +237,12 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
 
   const step1: Step = {
     num: 2, icon: <Zap className="h-3.5 w-3.5" />,
-    title: "Before you trade — run the filter",
+    title: "Quick sanity check — should you even trade this?",
     status: hardFail ? "stop" : softWarn ? "caution" : "go",
     body: (
       <div>
         <p style={{ marginBottom: "8px", color: C.muted }}>
-          Before putting any money in, check all four gates. If ANY fails,{" "}
-          <B color={C.red}>do not trade</B>.
+          Four quick checks. If <B>any one fails</B>, the math says skip this trade.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
           {filterChecks.map(c => (
@@ -484,16 +483,12 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
             {statusLabel}
           </span>
           <span style={{ fontFamily: FONT_BODY, fontSize: "12px", fontWeight: 700, color: C.text, letterSpacing: "0.04em" }}>
-            {sym} Trading Cockpit
-          </span>
-          <span style={{ fontFamily: FONT_BODY, fontSize: "11px", color: C.faint }}>
-            — your step-by-step action plan
+            {sym} — Your Step-by-Step Trading Plan
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <span style={{ fontFamily: FONT_BODY, fontSize: "9px", color: C.faint,
-            letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            hover metrics below for plain-english guides
+          <span style={{ fontFamily: FONT_BODY, fontSize: "11px", color: C.muted }}>
+            {open ? "Hide steps" : "Show steps"}
           </span>
           {open
             ? <ChevronUp  className="h-4 w-4 flex-shrink-0" style={{ color: C.faint }} />
@@ -533,9 +528,7 @@ export function TradingCockpit({ data, accountSize }: { data: AnalysisResult; ac
             textAlign: "center", lineHeight: 1.5, marginTop: "4px",
             borderTop: "1px solid var(--border)", paddingTop: "8px",
           }}>
-            Not financial advice. Quantitative signals have statistical edge on average but individual trades can and
-            do lose. Always trade with money you can afford to lose. Never trade without a stop loss.
-            Suggested max daily loss limit: −2% of total account.
+            These are AI-generated trade ideas, not financial advice. Every trade can lose — that&apos;s why you always set a stop-loss before entering (Step 1). Stick to your plan, manage your risk, and never trade more than you can afford to lose. Suggested daily loss limit: −2% of your account.
           </p>
         </div>
       )}

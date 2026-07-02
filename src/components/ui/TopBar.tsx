@@ -38,9 +38,9 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
   };
 
   const TABS: { id: Tab; label: string; key: string }[] = [
-    { id: "picks",     label: "Best Picks", key: "K" },
+    { id: "picks",     label: "Top Picks",  key: "K" },
     { id: "analysis",  label: "Analysis",   key: "A" },
-    { id: "intraday",  label: "Intraday",   key: "I" },
+    { id: "intraday",  label: "Live Chart", key: "I" },
     { id: "compare",   label: "Compare",    key: "C" },
     { id: "market",    label: "Market",     key: "M" },
     { id: "trading",   label: "Trade",      key: "T" },
@@ -87,7 +87,7 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
               marginTop: "2px",
               lineHeight: 1,
             }}>
-              ML-POWERED
+              AI SIGNALS
             </span>
           </div>
         )}
@@ -193,7 +193,7 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
       >
         <button
           onClick={onToggleBeginnerMode}
-          title={beginnerMode ? "Switch to Expert Mode" : "Switch to Beginner Mode"}
+          title={beginnerMode ? "Switch to full details view" : "Switch to simple view — just the key signal and what to do"}
           style={{
             display: "flex", alignItems: "center", gap: "5px",
             padding: "3px 10px",
@@ -207,7 +207,7 @@ export function TopBar({ symbol, onSymbolChange, period, onPeriodChange, activeT
           }}
         >
           <Sparkles size={11} />
-          {beginnerMode ? "Beginner" : "Expert"}
+          {beginnerMode ? "Simple View" : "Full Details"}
         </button>
       </div>
       <div

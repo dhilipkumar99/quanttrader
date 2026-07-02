@@ -510,13 +510,13 @@ function PickRow({
               onClick={e => { e.stopPropagation(); onSelect(pick.symbol); }}
               style={{
                 fontFamily: FONT_BODY, fontSize: "9px", fontWeight: 600,
-                letterSpacing: "0.1em", textTransform: "uppercase",
+                letterSpacing: "0.08em", textTransform: "uppercase",
                 color: "var(--blue)", background: "var(--blue-dim)",
                 border: "1px solid var(--blue)44", padding: "3px 8px",
                 cursor: "pointer",
               }}
             >
-              Analyse →
+              Full Analysis →
             </button>
             <button
               onClick={e => {
@@ -628,11 +628,11 @@ function PickRow({
 
               {/* Rationale */}
               <div style={{
-                marginTop: "10px", padding: "8px 12px",
-                background: "var(--bg-base)", border: "1px solid var(--border)",
-                fontFamily: FONT_BODY, fontSize: "11px", color: "var(--text-secondary)", lineHeight: 1.65,
+                marginTop: "10px", padding: "10px 14px",
+                background: "var(--blue-dim)", border: "1px solid rgba(11,31,58,0.15)",
+                fontFamily: FONT_BODY, fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.75,
               }}>
-                <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>Why this pick: </span>
+                <span style={{ fontWeight: 700, color: "var(--text-primary)" }}>Why the AI picked this: </span>
                 {buildRationale(pick, horizon)}
               </div>
 
@@ -972,20 +972,20 @@ export function DayTradePicksPanel({
       {/* KPI strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className="panel p-3">
-          <div style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)" }}>Best Picks Found</div>
+          <div style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)" }}>Top Opportunities Found</div>
           <div className="num text-2xl font-bold mt-0.5" style={{ color: activeMeta.color }}>
             {data?.horizon === horizon ? data.total_picks : "—"}
           </div>
         </div>
         <div className="panel p-3">
-          <div style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)" }}>Symbols Scanned</div>
+          <div style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)" }}>Stocks Scanned</div>
           <div className="num text-2xl font-bold mt-0.5" style={{ color: "var(--text-primary)" }}>
             {data?.horizon === horizon ? data.scanned_total : "—"}
           </div>
         </div>
         <div className="panel p-3">
           <div style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)" }}>
-            {includeShorts ? "Longs / Shorts" : "Long Signals"}
+            {includeShorts ? "Buy / Sell setups" : "Buy Signals"}
           </div>
           <div className="num text-2xl font-bold mt-0.5" style={{ color: "var(--blue)" }}>
             {data?.horizon === horizon
@@ -996,7 +996,7 @@ export function DayTradePicksPanel({
           </div>
         </div>
         <div className="panel p-3">
-          <div style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)" }}>Generated At</div>
+          <div style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)" }}>Last Updated</div>
           <div className="text-sm font-semibold mt-0.5" style={{ color: "var(--text-secondary)", fontFamily: FONT_MONO }}>
             {data?.horizon === horizon && generatedAt ? generatedAt : "—"}
           </div>
@@ -1088,51 +1088,53 @@ export function DayTradePicksPanel({
 
         {/* Pre-scan splash */}
         {!scanStarted && !loading && (
-          <div className="flex flex-col items-center justify-center py-20 gap-4 text-center px-8">
-            <TrendingUp className="h-10 w-10" style={{ color: "var(--text-muted)", opacity: 0.4 }} />
-            <div style={{ fontFamily: FONT_BODY, fontSize: "16px", fontWeight: 600, color: "var(--text-secondary)" }}>
-              One-Click Market Snapshot
+          <div className="flex flex-col items-center justify-center py-16 gap-5 text-center px-8">
+            <TrendingUp className="h-10 w-10" style={{ color: activeMeta.color, opacity: 0.7 }} />
+            <div>
+              <div style={{ fontFamily: FONT_BODY, fontSize: "20px", fontWeight: 700, color: "var(--text-primary)", marginBottom: "8px" }}>
+                Let AI find your best trades right now
+              </div>
+              <div style={{ fontFamily: FONT_BODY, fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.75, maxWidth: "480px" }}>
+                Pick how long you want to hold, then hit <strong>Scan Now</strong>. We analyse every major stock and surface the ones with the strongest signals — with exact entry, stop-loss, and target prices ready for you.
+              </div>
             </div>
-            <div style={{ fontFamily: FONT_BODY, fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.7, maxWidth: "480px" }}>
-              Select a <strong>Trading Horizon</strong> and <strong>Universe</strong> above, then click <strong>Run Scan</strong> to analyse
-              stocks using horizon-tuned quant models — intraday momentum, swing signals,
-              or long-term Jegadeesh-Titman momentum — ranked by horizon-specific score.
-            </div>
-            <div className="flex flex-wrap gap-3 justify-center mt-2" style={{ fontFamily: FONT_BODY, fontSize: "11px", color: "var(--text-muted)" }}>
+            <div className="flex flex-wrap gap-3 justify-center" style={{ fontFamily: FONT_BODY, fontSize: "11px", color: "var(--text-muted)" }}>
               {[
-                "Day-trade: volume surge + ATR breakout",
-                "Swing: RSI reversion + EMA cross",
-                "Long-term: 12-1mo J-T momentum",
-                "Kelly position sizing",
-                "Monte Carlo probability",
+                "Day Trade: best stocks for today",
+                "Swing: hold 1–4 weeks",
+                "Long-term: hold months",
+                "Exact dollar amounts to invest",
+                "Win probability for every pick",
               ].map(f => (
-                <span key={f} style={{ border: "1px solid var(--border)", padding: "4px 10px" }}>✓ {f}</span>
+                <span key={f} style={{ border: "1px solid var(--border)", padding: "4px 12px", background: "var(--bg-raised)" }}>✓ {f}</span>
               ))}
             </div>
             <button
               onClick={() => runScan(horizon, universe)}
-              className="flex items-center gap-2 px-6 py-3 mt-2"
+              className="flex items-center gap-2 px-8 py-3 mt-1"
               style={{
-                fontFamily: FONT_BODY, fontSize: "12px", fontWeight: 700,
-                letterSpacing: "0.12em", textTransform: "uppercase",
-                background: `${activeMeta.color}18`, color: activeMeta.color,
-                border: `2px solid ${activeMeta.color}55`, cursor: "pointer",
+                fontFamily: FONT_BODY, fontSize: "14px", fontWeight: 700,
+                background: activeMeta.color, color: "#FFFFFF",
+                border: "none", cursor: "pointer",
               }}
             >
-              <Zap className="h-4 w-4" /> Run {activeMeta.label} Scan
+              <Zap className="h-4 w-4" /> Scan Now
             </button>
+            <div style={{ fontFamily: FONT_BODY, fontSize: "11px", color: "var(--text-muted)" }}>
+              Takes about 25 seconds · Covers {universe === "both" ? "800+" : "500+"} stocks
+            </div>
           </div>
         )}
 
         {/* Loading */}
         {loading && (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
-            <RefreshCw className="h-8 w-8 animate-spin" style={{ color: "var(--text-muted)" }} />
-            <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: "var(--text-secondary)" }}>
-              Running {activeMeta.label} scan on {universe === "both" ? "S&P 500 + NASDAQ" : universe === "nasdaq" ? "NASDAQ" : "S&P 500"} universe…
+            <RefreshCw className="h-8 w-8 animate-spin" style={{ color: activeMeta.color }} />
+            <div style={{ fontFamily: FONT_BODY, fontSize: "16px", fontWeight: 600, color: "var(--text-primary)" }}>
+              Scanning {universe === "both" ? "800+" : "500+"} stocks for the best {activeMeta.label.toLowerCase()} opportunities…
             </div>
-            <div style={{ fontFamily: FONT_BODY, fontSize: "11px", color: "var(--text-muted)" }}>
-              Horizon-tuned quant models · ~25 seconds
+            <div style={{ fontFamily: FONT_BODY, fontSize: "12px", color: "var(--text-muted)" }}>
+              Analysing signals, risk, and probability for every stock · ~25 seconds
             </div>
             <div style={{ width: "240px", height: "3px", background: "var(--bg-active)", overflow: "hidden" }}>
               <div style={{
@@ -1151,7 +1153,7 @@ export function DayTradePicksPanel({
               style={{ background: "var(--yellow-dim)", borderBottom: "1px solid var(--yellow)33" }}>
               <AlertTriangle className="h-3 w-3 flex-shrink-0" style={{ color: "var(--yellow)" }} />
               <span style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--yellow)", lineHeight: 1.5 }}>
-                These are quantitative signals, not financial advice. Always use stop-losses and size positions appropriately for your risk tolerance.
+                These are AI-generated trade ideas, not financial advice. Always set a stop-loss before entering any trade. Click any row to see your exact entry, stop-loss, and target prices.
               </span>
             </div>
 

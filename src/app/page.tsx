@@ -200,8 +200,8 @@ function AppInner() {
 
   useEffect(() => {
     document.title = analysis
-      ? `${analysis.symbol} $${analysis.price.toFixed(2)} · QuantTrader Pro`
-      : "QuantTrader Pro";
+      ? `${analysis.symbol} $${analysis.price.toFixed(2)} · QuantTrader`
+      : "QuantTrader — AI Stock Signals";
   }, [analysis]);
 
   const fetchAnalysis = useCallback(async (sym: string, period: string, attempt = 0) => {
@@ -309,11 +309,11 @@ function AppInner() {
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
           padding: "6px 16px", fontSize: "12px", fontWeight: 500,
-          background: "rgba(180,83,9,0.10)", borderBottom: "1px solid rgba(180,83,9,0.25)",
-          color: "#92400E",
+          background: "rgba(26,107,74,0.08)", borderBottom: "1px solid rgba(26,107,74,0.2)",
+          color: "#14532D",
         }}>
           <RefreshCw size={12} style={{ animation: "spin 1s linear infinite" }} />
-          Warming up server (free tier cold start — first load may take 1–5 min)…
+          Connecting to market data — this takes about 30 seconds on first load. Hang tight!
         </div>
       )}
 
@@ -410,8 +410,8 @@ function AppInner() {
                                   {h}
                                 </button>
                               ))}
-                              <span style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "9px", color: "var(--text-muted)", alignSelf: "center", marginLeft: "4px" }}>
-                                options horizon
+                              <span style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "10px", color: "var(--text-muted)", alignSelf: "center", marginLeft: "4px" }}>
+                                — how far out to look
                               </span>
                             </div>
                             <OptionsPanel symbol={analysis.symbol} horizon={optionsHorizon} />
@@ -494,31 +494,56 @@ function EmptyState({ onSymbol }: { onSymbol: (s: string) => void }) {
   const { onboarding } = useTrader();
   const router = useRouter();
   return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="flex flex-col items-center justify-center pt-12 pb-6 gap-4 text-center">
-        <div className="text-3xl font-bold" style={{ color: "var(--text-secondary)", fontFamily: "'Times New Roman', Times, Georgia, serif" }}>QuantTrader</div>
-        <div className="text-sm" style={{ color: "var(--text-muted)", fontFamily: "'Palatino Linotype', Palatino, serif" }}>
-          ML-powered quant signals for every trader
+    <div className="flex flex-col items-center gap-6">
+      <div className="flex flex-col items-center justify-center pt-10 pb-4 gap-5 text-center" style={{ maxWidth: "600px", margin: "0 auto" }}>
+        <div>
+          <div className="text-3xl font-bold" style={{ color: "var(--text-primary)", fontFamily: "'Times New Roman', Times, Georgia, serif", marginBottom: "8px" }}>
+            Find your next trade in seconds.
+          </div>
+          <div style={{ fontSize: "15px", color: "var(--text-secondary)", fontFamily: "'Palatino Linotype', Palatino, serif", lineHeight: 1.65 }}>
+            QuantTrader scans the entire S&amp;P 500 and tells you exactly what to buy, how much to invest, and when to exit — in plain English. No finance degree required.
+          </div>
         </div>
+
+        {/* Feature pills */}
+        <div className="flex gap-2 flex-wrap justify-center">
+          {[
+            "AI-powered buy/sell signals",
+            "Exact position sizes",
+            "Stop-loss & target prices",
+            "500-scenario simulations",
+          ].map(f => (
+            <span key={f} style={{
+              fontSize: "11px", padding: "4px 12px",
+              background: "var(--green-dim)", color: "var(--green)",
+              border: "1px solid rgba(26,107,74,0.25)",
+              fontFamily: "'Palatino Linotype', Palatino, serif",
+            }}>
+              ✓ {f}
+            </span>
+          ))}
+        </div>
+
         {!onboarding.completed && (
           <button
             onClick={() => router.push("/onboarding")}
             style={{
               display: "flex", alignItems: "center", gap: "6px",
               fontFamily: "'Palatino Linotype', Palatino, serif",
-              fontSize: "13px", fontWeight: 600,
-              padding: "10px 24px", marginTop: "4px",
-              background: "var(--blue)", color: "#fff",
+              fontSize: "14px", fontWeight: 700,
+              padding: "12px 28px", marginTop: "4px",
+              background: "var(--green)", color: "#fff",
               border: "none", cursor: "pointer",
             }}
           >
-            Set up my profile →
+            Get started — it&apos;s free →
           </button>
         )}
-        <div style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "11px", color: "var(--text-disabled)", marginTop: "4px" }}>
-          or search a stock above
+
+        <div style={{ fontFamily: "'Palatino Linotype', Palatino, serif", fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+          Or try a stock right now:
         </div>
-        <div className="flex gap-2 flex-wrap justify-center mt-2">
+        <div className="flex gap-2 flex-wrap justify-center">
           {suggestions.map(s => (
             <button key={s} onClick={() => onSymbol(s)} className="et-btn et-btn-ghost px-4 py-2">
               {s}
@@ -532,10 +557,10 @@ function EmptyState({ onSymbol }: { onSymbol: (s: string) => void }) {
               fontFamily: "'Palatino Linotype', Palatino, serif",
               fontSize: "11px", color: "var(--text-disabled)",
               background: "none", border: "none", cursor: "pointer",
-              textDecoration: "underline", marginTop: "8px",
+              textDecoration: "underline", marginTop: "4px",
             }}
           >
-            Update my profile
+            Update my trading profile
           </button>
         )}
       </div>
@@ -578,7 +603,7 @@ function MarketTabView({ onSelectSymbol, onGoToAnalysisTabOnly, serverReady }: {
   const [sub, setSub] = useState<"overview" | "scanner">("overview");
   return (
     <div>
-      <SubTabBar tabs={["Overview", "Scanner"]} active={sub === "overview" ? "Overview" : "Scanner"} onChange={t => setSub(t === "Overview" ? "overview" : "scanner")} />
+      <SubTabBar tabs={["Market Overview", "Stock Scanner"]} active={sub === "overview" ? "Market Overview" : "Stock Scanner"} onChange={t => setSub(t === "Market Overview" ? "overview" : "scanner")} />
       {sub === "overview" && (
         // MarketOverviewPanel calls onSelectSymbol AND onGoToAnalysis separately in handleSelect.
         // onGoToAnalysis must only switch tab — onSelectSymbol already handles the symbol fetch.
@@ -596,7 +621,7 @@ function TradingTabView({ defaultSymbol, onSelectSymbol }: { defaultSymbol: stri
   const [sub, setSub] = useState<"manual" | "agent">("manual");
   return (
     <div>
-      <SubTabBar tabs={["Manual", "Auto-Agent"]} active={sub === "manual" ? "Manual" : "Auto-Agent"} onChange={t => setSub(t === "Manual" ? "manual" : "agent")} />
+      <SubTabBar tabs={["Place a Trade", "AI Auto-Trade"]} active={sub === "manual" ? "Place a Trade" : "AI Auto-Trade"} onChange={t => setSub(t === "Place a Trade" ? "manual" : "agent")} />
       {sub === "manual" && <TradingPanel defaultSymbol={defaultSymbol} onSelectSymbol={onSelectSymbol} />}
       {sub === "agent"  && <AgentPanel />}
     </div>
@@ -612,7 +637,7 @@ function PortfolioTabView({ backtest, backtestLoading, onRunBacktest, activeSymb
   const [sub, setSub] = useState<"portfolio" | "backtest">("portfolio");
   return (
     <div>
-      <SubTabBar tabs={["Portfolio", "Backtest"]} active={sub === "portfolio" ? "Portfolio" : "Backtest"} onChange={t => setSub(t === "Portfolio" ? "portfolio" : "backtest")} />
+      <SubTabBar tabs={["My Portfolio", "Backtest Strategy"]} active={sub === "portfolio" ? "My Portfolio" : "Backtest Strategy"} onChange={t => setSub(t === "My Portfolio" ? "portfolio" : "backtest")} />
       {sub === "portfolio" && <PortfolioPanel />}
       {sub === "backtest"  && <SimulatorPanel result={backtest} loading={backtestLoading} onRun={onRunBacktest} symbol={activeSymbol} />}
     </div>

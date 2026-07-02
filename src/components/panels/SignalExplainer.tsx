@@ -44,9 +44,9 @@ export function SignalExplainer({ data }: { data: AnalysisResult }) {
   const accentBg    = sig === 1 ? "var(--green-dim)" : sig === -1 ? "var(--red-dim)" : "var(--yellow-dim)";
 
   const headline =
-    sig === 1  ? `Buy opportunity — ${data.symbol} shows ${(conf * 100).toFixed(0)}% confidence LONG` :
-    sig === -1 ? `Caution — ${data.symbol} signals ${(conf * 100).toFixed(0)}% confidence SHORT/exit` :
-                 `No clear edge in ${data.symbol} right now`;
+    sig === 1  ? `${data.symbol} looks like a buy — AI is ${(conf * 100).toFixed(0)}% confident` :
+    sig === -1 ? `${data.symbol} — AI says sell or stay out (${(conf * 100).toFixed(0)}% confident)` :
+                 `No clear opportunity in ${data.symbol} right now — wait for a stronger signal`;
 
   const regimeNote = (() => {
     const r = data.regime ?? "";
@@ -107,9 +107,9 @@ export function SignalExplainer({ data }: { data: AnalysisResult }) {
             <>
               {/* Three-column trade brief */}
               <div className="p-3">
-                <div style={{ fontFamily: FONT_BODY, fontSize: "9px", fontWeight: 600, letterSpacing: "0.16em",
-                  textTransform: "uppercase", color: "var(--text-muted)", marginBottom: "10px" }}>
-                  Concrete Trade Brief
+                <div style={{ fontFamily: FONT_BODY, fontSize: "11px", fontWeight: 700,
+                  color: "var(--text-primary)", marginBottom: "10px" }}>
+                  Your Trade Plan
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
 
@@ -129,7 +129,7 @@ export function SignalExplainer({ data }: { data: AnalysisResult }) {
                     </div>
                     <div style={{ fontFamily: FONT_BODY, fontSize: "10px",
                       color: "var(--text-muted)", marginTop: "4px" }}>
-                      {(data.position_size_pct ?? 0)}% Kelly of {fmt$(accountSize)}
+                      {(data.position_size_pct ?? 0)}% of your {fmt$(accountSize)} account
                     </div>
                   </div>
 
@@ -230,9 +230,11 @@ export function SignalExplainer({ data }: { data: AnalysisResult }) {
           ) : (
             <div className="px-3 py-5 text-center">
               <p style={{ fontFamily: FONT_BODY, fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.7 }}>
-                No actionable edge detected. Sub-signals are mixed or below the confidence threshold.
-                <br />
-                Use the Backtest tab to study historical performance while waiting for clarity.
+                No clear trade opportunity right now. The AI models are giving mixed signals — some say up, some say down. This is normal.
+                <br /><br />
+                <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>
+                  Come back at the next market session or try the <strong>Top Picks</strong> tab to find stocks with stronger signals right now.
+                </span>
               </p>
             </div>
           )}
@@ -241,11 +243,11 @@ export function SignalExplainer({ data }: { data: AnalysisResult }) {
           <div className="px-3 pb-3 flex items-start justify-between gap-4 flex-wrap"
             style={{ borderTop: "1px solid var(--border)", paddingTop: "8px" }}>
             <p style={{ fontFamily: FONT_BODY, fontSize: "11px", color: "var(--text-secondary)" }}>
-              <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>Regime: </span>
+              <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>Market mood: </span>
               {regimeNote}
             </p>
             <p style={{ fontFamily: FONT_BODY, fontSize: "9px", color: "var(--text-disabled)", flexShrink: 0 }}>
-              Not financial advice. Past performance does not guarantee future results.
+              AI-generated signals only. Not financial advice. Past results don&apos;t guarantee future returns.
             </p>
           </div>
         </div>

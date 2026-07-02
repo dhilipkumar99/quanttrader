@@ -210,7 +210,7 @@ export function SignalPanel({ data, onCompare }: { data: AnalysisResult; onCompa
               <div style={{ fontFamily: FONT_BODY, fontSize: "9px", textTransform: "uppercase",
                 letterSpacing: "0.08em", color: "var(--text-muted)",
                 borderBottom: "1px dashed rgba(255,255,255,0.15)", paddingBottom: "2px", marginBottom: "3px" }}>
-                Exp Return
+                Exp. Gain
               </div>
               <div className="text-sm font-bold num"
                 style={{ color: (data.expected_return ?? 0) >= 0 ? "var(--green)" : "var(--red)" }}>
@@ -240,7 +240,7 @@ export function SignalPanel({ data, onCompare }: { data: AnalysisResult; onCompa
       {/* ── Sub-signals ── */}
       <div className="panel" style={{ overflow: "visible" }}>
         <div className="panel-header">
-          <span>Sub-Signals</span>
+          <span>What Each Model Says</span>
           <MetricExplainer
             label="Market Regime" value={(data.regime ?? "").replace(/_/g, " ")}
             what="The regime is the overall market 'weather' for this stock. It determines which sub-signals the system trusts most."
@@ -303,7 +303,7 @@ export function SignalPanel({ data, onCompare }: { data: AnalysisResult; onCompa
       {/* ── Risk & Monte Carlo ── */}
       <div className="panel" style={{ overflow: "visible" }}>
         <div className="panel-header">
-          <span>Risk &amp; Monte Carlo</span>
+          <span>Risk &amp; Win Probability</span>
           <Shield className="h-3.5 w-3.5" style={{ color: "var(--text-muted)" }} />
         </div>
         <div style={{ padding: "8px", display: "flex", flexDirection: "column", gap: "6px", overflow: "visible" }}>
@@ -406,7 +406,7 @@ export function SignalPanel({ data, onCompare }: { data: AnalysisResult; onCompa
                   style={{ color: "var(--text-muted)", fontFamily: FONT_BODY,
                     borderBottom: "1px dashed rgba(255,255,255,0.15)", paddingBottom: "3px",
                     display: "inline-block" }}>
-                  21-Day Monte Carlo (500 paths)
+                  Win Probability — 500 simulated futures
                 </div>
                 <MonteCarloChart mc={data.monte_carlo} />
               </div>

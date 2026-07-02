@@ -10,9 +10,9 @@ import {
 import Link from "next/link";
 
 const NAV_ITEMS: { id: Tab; label: string; Icon: React.FC<{ className?: string }>; key: string }[] = [
-  { id: "picks",     label: "Best Picks", Icon: Crosshair,       key: "K" },
+  { id: "picks",     label: "Top Picks",  Icon: Crosshair,       key: "K" },
   { id: "analysis",  label: "Analysis",   Icon: BarChart2,       key: "A" },
-  { id: "intraday",  label: "Intraday",   Icon: Activity,        key: "I" },
+  { id: "intraday",  label: "Live Chart", Icon: Activity,        key: "I" },
   { id: "compare",   label: "Compare",    Icon: GitCompare,      key: "C" },
   { id: "market",    label: "Market",     Icon: Globe,           key: "M" },
   { id: "trading",   label: "Trade",      Icon: Zap,             key: "T" },
@@ -125,8 +125,8 @@ export function Sidebar({ collapsed, activeTab, onTabChange, onSelectSymbol }: P
       {!collapsed && (
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", padding: "4px 0" }}>
           {[
-            { href: "/learn",  label: "Learn",  Icon: BookOpen },
-            { href: "/learn#about", label: "About", Icon: Info },
+            { href: "/learn",  label: "Trading Guide",  Icon: BookOpen },
+            { href: "/about",  label: "About",          Icon: Info },
           ].map(({ href, label, Icon }) => (
             <Link
               key={href}
@@ -187,9 +187,19 @@ function WatchlistPanel({ pinnedSymbols, quoteMap, activeSymbol, onSelectSymbol,
       <div className="flex-1 overflow-y-auto">
         {pinnedSymbols.length === 0 && !adding ? (
           <div style={{ padding: "12px", textAlign: "center" }}>
-            <p style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "rgba(255,255,255,0.35)", lineHeight: 1.5 }}>
-              No symbols.<br />Click + to add.
+            <p style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "rgba(255,255,255,0.35)", lineHeight: 1.6 }}>
+              Add your favourite stocks here for quick access and live price updates.
             </p>
+            <button
+              onClick={() => setAdding(true)}
+              style={{
+                marginTop: "8px", fontFamily: FONT_BODY, fontSize: "10px",
+                color: "rgba(255,255,255,0.5)", background: "none", border: "none",
+                cursor: "pointer", textDecoration: "underline",
+              }}
+            >
+              + Add a stock
+            </button>
           </div>
         ) : (
           pinnedSymbols.map(sym => {

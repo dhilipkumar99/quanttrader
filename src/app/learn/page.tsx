@@ -4,77 +4,79 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Learn – QuantTrader",
-  description: "About QuantTrader, how the AI pipeline works, and a plain-English glossary of every term.",
+  description: "How QuantTrader works, what every signal means, and a plain-English glossary. No finance degree required.",
 };
 
 const STEPS = [
   {
     n: "01",
-    title: "You enter a stock ticker",
-    body: "Type any US stock symbol (AAPL, TSLA, NVDA…) into the search bar. QuantTrader fetches live price data directly from Yahoo Finance.",
+    title: "You search for a stock",
+    body: "Type any US stock symbol (AAPL, TSLA, NVDA…) into the search bar. QuantTrader fetches live price and market data instantly.",
   },
   {
     n: "02",
-    title: "The market regime is detected",
-    body: "We measure the Hurst Exponent — a mathematical measure of how 'trendy' vs. 'mean-reverting' a stock is. Combined with volatility (ATR), this categorises the market into one of five regimes: Trending Up, Trending Down, Mean Reverting, Volatile, or Quiet.",
+    title: "We read the market's mood",
+    body: "The AI measures the stock's recent behaviour — is it trending steadily upward? Bouncing up and down? Unusually volatile? This 'market mood' tells us which type of analysis to trust most.",
   },
   {
     n: "03",
-    title: "Four independent signals are generated",
-    body: "Mean Reversion (Bollinger %B + RSI), Trend Following (triple EMA + MACD), Momentum (Jegadeesh-Titman 12-1 strategy), and an ML Ensemble (Gradient Boosted Machine trained on 14 features). Each signal votes buy, sell, or neutral.",
+    title: "Four independent AI models analyse the stock",
+    body: "A mean-reversion model (catches bounce-backs), a trend-following model (rides sustained moves), a momentum model (winners keep winning), and a machine learning model trained on years of price data. Each one votes: Buy, Sell, or Stay Out.",
   },
   {
     n: "04",
-    title: "Signals are weighted by regime",
-    body: "The regime determines which signals get more weight. In a trending market, trend-following signals dominate. In a mean-reverting market, mean-reversion signals lead. This adaptive weighting is key to performance.",
+    title: "The votes are combined into one clear signal",
+    body: "The AI weighs each vote based on the current market mood. In a strong uptrend, trend signals count more. In a bouncy sideways market, the bounce-back signals lead. The result: one clear Buy, Sell, or Hold — plus a confidence score.",
   },
   {
     n: "05",
-    title: "Position size is calculated with Kelly Criterion",
-    body: "The Half-Kelly formula (f* = (bp - q)/b × 0.5) calculates exactly how much of your portfolio to risk. If tail risk (CVaR) is too high, the position is halved automatically. Max position size is capped at 25% of portfolio.",
+    title: "We calculate exactly how much to invest",
+    body: "A mathematical formula called Kelly Criterion works out the ideal fraction of your account to put in this trade. It's designed to grow your money fastest while protecting against big losses. If the math says 0%, we say: skip the trade.",
   },
   {
     n: "06",
-    title: "Monte Carlo simulation runs 500 future scenarios",
-    body: "Rather than assuming returns are normally distributed (they're not), we bootstrap from actual historical returns to simulate 500 possible 21-day futures. This gives you a realistic probability of profit and worst-case drawdown.",
+    title: "We run 500 simulated futures",
+    body: "Rather than guessing how the trade will go, we simulate 500 different possible outcomes based on how the stock has behaved historically. This gives you a realistic win probability — not just hope.",
   },
   {
     n: "07",
-    title: "You see the result + plain-English explanation",
-    body: "The composite signal, confidence, indicators, and risk metrics are displayed. Beginners see the 'What does this mean for me?' explainer. Advanced users see the raw quant rationale.",
+    title: "You see your complete trading plan",
+    body: "You get the signal, your confidence level, an exact entry price, a stop-loss price (to limit your downside), a target price (to lock in gains), and a dollar amount to invest — all in plain English.",
   },
   {
     n: "08",
-    title: "Optionally, paper trade to validate",
-    body: "Switch to the Portfolio → Backtest sub-tab to run a full historical backtest. The simulator models realistic slippage (ADV-normalised, IB-style commission) so results are trustworthy, not overfitted.",
+    title: "Test it before you use real money",
+    body: "Head to Portfolio → Backtest to see how the strategy performed historically. The simulator accounts for realistic trading costs so you get an honest picture.",
   },
 ];
 
 const TERMS = [
-  { term: "Signal", def: "A recommendation from the AI: Buy (go long), Sell (avoid or exit), or Neutral (no clear direction). Think of it like a traffic light — green means go, red means stop, yellow means wait." },
-  { term: "Confidence", def: "How strongly the AI believes in the signal, from 0% (totally uncertain) to 100% (very certain). A weak signal at low confidence should be treated with more caution than a strong signal at high confidence." },
-  { term: "Regime", def: "The 'personality' of the stock's recent price behaviour. Is it in a persistent trend? Bouncing between a range? Unusually volatile? Knowing the regime helps pick the right strategy." },
-  { term: "Hurst Exponent", def: "A number between 0 and 1 measuring market memory. Above 0.6 means the price is trending (momentum). Below 0.4 means it tends to reverse (mean-reverting). Around 0.5 is random (no predictable pattern)." },
-  { term: "Mean Reversion", def: "The tendency of prices to snap back toward their average. If a stock falls far below its average, mean reversion says it will likely bounce back." },
-  { term: "Momentum", def: "The tendency of recent price trends to continue. If a stock has been rising, momentum says it may keep rising for a while." },
-  { term: "RSI (Relative Strength Index)", def: "A measure of how overbought or oversold a stock is on a 0–100 scale. Above 70 is considered overbought (may fall), below 30 is oversold (may rise)." },
-  { term: "Bollinger Bands", def: "Price bands plotted 2 standard deviations above and below a moving average. When the price touches the upper band it may be overbought; lower band = oversold." },
-  { term: "MACD", def: "Moving Average Convergence Divergence. A popular trend indicator showing the relationship between two moving averages. When the MACD line crosses above the signal line, that's usually a bullish sign." },
-  { term: "EMA (Exponential Moving Average)", def: "A moving average that weights recent prices more heavily than older ones. Traders use multiple EMAs (e.g., 9, 21, 55-day) to spot trend direction and crossovers." },
-  { term: "ATR (Average True Range)", def: "A measure of how much a stock's price moves on a typical day. High ATR = volatile. Low ATR = calm. Used here to detect volatile market regimes." },
-  { term: "Kelly Criterion", def: "A mathematical formula that calculates the optimal fraction of your capital to bet on a trade, based on your edge and the odds. QuantTrader uses Half-Kelly (half the optimal) for safety." },
-  { term: "Position Size", def: "How much of your portfolio to allocate to a single trade, expressed as a percentage. The Kelly formula produces this number — never more than 25% in QuantTrader." },
-  { term: "Monte Carlo Simulation", def: "Running hundreds or thousands of random but realistic future scenarios to estimate probabilities. QuantTrader runs 500 scenarios over 21 days to estimate your odds of profit." },
-  { term: "VaR (Value at Risk)", def: "The maximum expected loss at a given confidence level. '5% VaR of -3%' means there's a 5% chance of losing more than 3% in the time period." },
-  { term: "CVaR (Conditional Value at Risk)", def: "The average loss in the worst 5% of scenarios — more informative than VaR alone. If CVaR is very negative (< -8%), QuantTrader halves the position size automatically." },
-  { term: "Drawdown", def: "The percentage drop from a portfolio's peak to its lowest point. A 20% drawdown means the portfolio fell 20% from its high before recovering." },
-  { term: "Sharpe Ratio", def: "A measure of risk-adjusted return. It divides your return by your volatility. Above 1.0 is considered good, above 2.0 is excellent. A high return with low volatility = high Sharpe." },
-  { term: "Sortino Ratio", def: "Like the Sharpe Ratio, but only penalises downside volatility (bad moves). A more forgiving measure — good strategies that occasionally spike up get a better Sortino than Sharpe." },
-  { term: "Slippage", def: "The difference between the price you expected to trade at and the price you actually got. In a fast-moving market, your buy order might fill slightly higher than planned. Measured in basis points (bps)." },
-  { term: "Basis Points (bps)", def: "1 basis point = 0.01%. So 50 bps slippage means you paid 0.5% more than expected. Common unit for small price differences in finance." },
-  { term: "Walk-Forward Validation", def: "A backtesting method where the ML model is only trained on data before each trade, never on future data. This prevents 'cheating' and makes results more realistic." },
-  { term: "GBM / Gradient Boosted Machine", def: "A powerful machine learning algorithm that builds hundreds of decision trees, each one correcting the errors of the last. One of the most effective ML methods for financial prediction." },
-  { term: "ADV (Average Daily Volume)", def: "How many shares of a stock typically trade each day. QuantTrader normalises signals and slippage by ADV — a large order in a low-volume stock creates more slippage." },
+  { term: "Signal", def: "The AI's recommendation: Buy, Sell, or Hold. Think of it like a traffic light — green means the AI sees a buying opportunity, red means avoid or exit, yellow means the models can't agree so stay out." },
+  { term: "Confidence", def: "How sure the AI is about its signal, shown as a percentage. 90% confidence means the four AI models are strongly agreeing. 55% means they're barely agreeing — treat it with more caution. Below 60%, we recommend sizing small or waiting." },
+  { term: "Market Regime", def: "The current 'mood' of the stock — is it trending steadily upward, falling, bouncing between a range, or unusually volatile? Knowing the regime tells the AI which type of analysis to trust most." },
+  { term: "Hurst Exponent", def: "A number measuring whether a stock is trending (goes up, keeps going up) or bouncy (goes up, comes back down). Above 0.6 = trending. Below 0.4 = bouncy. Around 0.5 = unpredictable. QuantTrader uses this to decide which strategy to apply." },
+  { term: "Mean Reversion", def: "The idea that prices tend to snap back toward their average after moving too far away. Like a rubber band — the more it stretches, the harder it snaps back. QuantTrader's mean-reversion model spots these stretch-and-snap moments." },
+  { term: "Momentum", def: "The 'winners keep winning' effect. Stocks that have been going up for the past year tend to keep going up for the next few months. QuantTrader's momentum model looks for these sustained winners." },
+  { term: "RSI (Relative Strength Index)", def: "A 0–100 score measuring if a stock has been bought too much (overbought) or sold too much (oversold). Above 70 = overbought, likely to pull back. Below 30 = oversold, likely to bounce. Think of it as a thermometer for market excitement." },
+  { term: "Bollinger Bands", def: "A price channel drawn around a stock's average price. When the price hits the top of the channel, it may be overbought. When it hits the bottom, it may be oversold. The %B value shows where inside the channel the price currently sits." },
+  { term: "MACD", def: "A trend indicator that compares two moving averages to spot momentum shifts. When the MACD line crosses above its signal line, that's typically bullish. When it crosses below, it's bearish. One of the most widely used indicators in trading." },
+  { term: "EMA (Exponential Moving Average)", def: "An average of a stock's recent prices that gives more weight to recent days. When a fast EMA (like 8-day) crosses above a slower one (like 21-day), the trend is accelerating upward. When it crosses below, momentum is fading." },
+  { term: "ATR (Average True Range)", def: "How many dollars (as a %) the stock moves on a typical day. High ATR = big swings, volatile. Low ATR = small moves, calm. QuantTrader uses ATR to set your stop-loss distance — wider stop in volatile stocks, tighter in calm ones." },
+  { term: "Kelly Criterion", def: "A mathematical formula that tells you the ideal percentage of your account to put into one trade. Invest too little and you grow too slowly. Invest too much and one bad trade can wipe you out. Kelly finds the mathematical sweet spot. QuantTrader uses half-Kelly for extra safety." },
+  { term: "Position Size", def: "How much of your account to invest in a single trade, shown as a % and in dollars. This comes from the Kelly formula. Never invest more than the suggested position size — bigger is not smarter, it's just riskier." },
+  { term: "Stop-Loss", def: "A price level you set in your broker that automatically sells your stock if it falls too far. It's your safety net — it limits how much you can lose on a bad trade. Never enter a trade without one." },
+  { term: "Take Profit", def: "A target price where you plan to sell and lock in your gains. Setting this before entering a trade stops you from getting greedy and giving back your profits." },
+  { term: "Win Probability", def: "QuantTrader's estimate of how likely this trade is to be profitable, based on 500 simulated future scenarios. 70% means 70 out of 100 similar situations ended in a gain. Not a guarantee — just the best statistical estimate." },
+  { term: "Monte Carlo Simulation", def: "A way of simulating 500 different possible futures for a stock, based on how it has historically behaved. Instead of guessing, we count how many of those 500 futures end in profit. QuantTrader does this for every trade recommendation." },
+  { term: "Drawdown", def: "The percentage drop from a portfolio's highest point to its lowest point before it recovered. A 20% drawdown means the portfolio fell 20% from its peak before bouncing back. Smaller drawdowns = smoother ride." },
+  { term: "Sharpe Ratio", def: "A score for how good a strategy's returns are relative to its risk. Above 1.0 is good. Above 2.0 is excellent. If two strategies have the same returns, the one with less volatility gets a higher Sharpe — because smoother is better." },
+  { term: "Sortino Ratio", def: "Like the Sharpe Ratio, but only penalises downward moves. If your strategy occasionally spikes up but rarely crashes down, the Sortino captures that better than the Sharpe. Higher is better." },
+  { term: "Slippage", def: "When you place a buy order, you often end up paying slightly more than the price you saw. In fast markets, your order fills at a worse price than expected. This friction is called slippage — QuantTrader models it in all backtests." },
+  { term: "Backtest", def: "Running a trading strategy against real historical data to see how it would have performed. QuantTrader's backtester shows wins, losses, drawdowns, and returns on past data — so you can evaluate a strategy before risking real money." },
+  { term: "Walk-Forward Validation", def: "A more honest way of backtesting. Instead of training the AI on all historical data and then testing it on the same data (which would be cheating), walk-forward validation only ever tests on data the AI has never seen before. This gives more realistic performance estimates." },
+  { term: "AI / Machine Learning Model", def: "QuantTrader's AI model learns patterns from years of stock price data. It analyses 14 different price and volume features and outputs a Buy/Sell/Neutral recommendation. It fires only when it's at least 62% confident — otherwise it stays quiet." },
+  { term: "Volume / ADV", def: "ADV stands for Average Daily Volume — how many shares of a stock typically trade each day. If today's volume is 2× ADV, unusually many people are trading. High volume usually means a signal is stronger and orders will fill more easily." },
+  { term: "VaR & CVaR", def: "VaR (Value at Risk) is your estimated maximum loss at a certain confidence level. CVaR is the average loss in the worst scenarios. QuantTrader automatically halves the suggested position size if CVaR is dangerously high — protecting you without you having to do the math." },
 ];
 
 export default function LearnPage() {
@@ -109,17 +111,16 @@ export default function LearnPage() {
           <div className="text-center space-y-3">
             <h1 className="text-4xl font-black text-zinc-100">About QuantTrader</h1>
             <p className="text-lg text-zinc-400 max-w-xl mx-auto leading-relaxed">
-              An institutional-grade quant trading platform powered by machine learning —
-              built for everyone from beginners to professional traders.
+              The AI trading assistant that tells you exactly what to buy, how much to invest, and when to exit — in plain English. No finance degree needed.
             </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {[
-              { icon: Brain, title: "Machine Learning Core", body: "A Gradient Boosted Machine ensemble trained with walk-forward validation learns from 14 price and volume features to produce high-confidence trade signals." },
-              { icon: Shield, title: "Risk-First Design", body: "Half-Kelly criterion position sizing and a CVaR gate mean the system never bets more than the math justifies. Your capital is protected first, returns second." },
-              { icon: Zap, title: "Real-Time Data", body: "Prices and indicators refresh directly from Yahoo Finance, giving you accurate, up-to-date analysis on thousands of tickers." },
-              { icon: TrendingUp, title: "Paper Simulator", body: "Test every strategy on real historical data before committing a single dollar. See realistic slippage, commissions, drawdowns, and win rates." },
+              { icon: Brain, title: "Four AI Models, One Clear Signal", body: "Four independent AI models each analyse the stock from a different angle. Their votes are combined into a single Buy / Sell / Hold signal with a confidence score, so you always know how much to trust the recommendation." },
+              { icon: Shield, title: "Your Money Is Protected First", body: "Before calculating how much to invest, the system runs a safety check. If the risk is too high, it says skip the trade or invest less. You'll never be told to bet the house on a weak signal." },
+              { icon: Zap, title: "Live Market Data", body: "Prices, signals, and indicators update from live market data, so the analysis reflects what's happening right now — not yesterday's news." },
+              { icon: TrendingUp, title: "Test Before You Risk Real Money", body: "Run any strategy against years of real historical data before investing a single dollar. See what would have happened — wins, losses, drawdowns, everything." },
             ].map(({ icon: Icon, title, body }) => (
               <div key={title} className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-5 space-y-2">
                 <div className="flex items-center gap-2">
@@ -132,15 +133,12 @@ export default function LearnPage() {
           </div>
 
           <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-6 space-y-3">
-            <h2 className="text-xl font-bold text-zinc-100">How We&apos;re Different</h2>
+            <h2 className="text-xl font-bold text-zinc-100">Why QuantTrader Is Different</h2>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Most retail trading tools are glorified chart-drawing apps. QuantTrader brings institutional quant research
-              methodologies — regime detection, bootstrap Monte Carlo simulation, ADV-normalised slippage — to retail investors.
-              Every design decision traces back to peer-reviewed quant finance literature, not gut feeling.
+              Most trading apps are just chart-drawing tools — they show you a pretty line and leave you to figure out what it means. QuantTrader goes further: it tells you what the signal means, what to do about it, how much to invest, and where to set your stop-loss. The same type of analysis used by professional trading firms, made accessible to everyone.
             </p>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              <strong className="text-zinc-200">We do not manage money.</strong> We provide analysis tools only.
-              Always consult a licensed financial advisor before making investment decisions.
+              <strong className="text-zinc-200">Important:</strong> QuantTrader is an analysis and education tool, not a financial advisor. Always do your own research and only trade with money you can afford to lose.
             </p>
           </div>
         </section>
@@ -152,7 +150,7 @@ export default function LearnPage() {
           <div className="text-center space-y-3">
             <h2 className="text-4xl font-black text-zinc-100">How It Works</h2>
             <p className="text-lg text-zinc-400 max-w-xl mx-auto leading-relaxed">
-              From ticker symbol to trade signal — here&apos;s every step the AI takes.
+              From typing a stock symbol to getting your complete trading plan — here&apos;s every step the AI takes, in plain English.
             </p>
           </div>
 
@@ -179,9 +177,9 @@ export default function LearnPage() {
         {/* ── Glossary ── */}
         <section id="glossary" className="space-y-8">
           <div className="text-center space-y-3">
-            <h2 className="text-4xl font-black text-zinc-100">Glossary</h2>
+            <h2 className="text-4xl font-black text-zinc-100">What Does That Mean?</h2>
             <p className="text-lg text-zinc-400 max-w-xl mx-auto leading-relaxed">
-              Plain-English definitions for every term used in QuantTrader. No finance degree required.
+              Plain-English definitions for every term you&apos;ll see in QuantTrader. Bookmark this page — it&apos;s your trading dictionary.
             </p>
           </div>
 
@@ -214,13 +212,14 @@ export default function LearnPage() {
           ))}
         </section>
 
-        <div className="text-center pt-4">
+        <div className="text-center pt-4 space-y-3">
+          <p className="text-zinc-400 text-sm">Ready to put this into practice?</p>
           <Link
             href="/"
             className="inline-flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition-all"
           >
             <BarChart2 className="h-4 w-4" />
-            Back to the App
+            Find Your Next Trade
           </Link>
         </div>
       </main>

@@ -88,7 +88,7 @@ function ConfidenceBar({ confidence }: { confidence: number }) {
         display: "flex", justifyContent: "space-between", marginBottom: "6px",
         fontFamily: FONT_SERIF, fontSize: "12px", color: "var(--text-muted)",
       }}>
-        <span>Signal Confidence</span>
+        <span>How confident is the AI?</span>
         <span style={{ fontFamily: FONT_MONO, fontWeight: 700, color }}>{pct}%</span>
       </div>
       <div style={{
@@ -197,7 +197,7 @@ function PositionSuggestion({ accountSize, positionPct, signal }: {
         fontFamily: FONT_SERIF, fontSize: "11px", color: "var(--text-muted)",
         textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "8px",
       }}>
-        Suggested Position Size
+        How Much to Invest
       </div>
       <div style={{
         fontFamily: FONT_MONO, fontSize: "28px", fontWeight: 900,
@@ -208,7 +208,7 @@ function PositionSuggestion({ accountSize, positionPct, signal }: {
       <div style={{
         fontFamily: FONT_SERIF, fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px",
       }}>
-        {positionPct.toFixed(1)}% of your ${accountSize.toLocaleString()} account · based on risk-adjusted Kelly formula
+        {positionPct.toFixed(1)}% of your ${accountSize.toLocaleString()} account · calculated by the AI to match your risk level
       </div>
     </div>
   );
@@ -257,12 +257,12 @@ export function BeginnerModeView({ data, accountSize, period, onExpertMode }: Pr
           onClick={onExpertMode}
           style={{
             display: "flex", alignItems: "center", gap: "4px",
-            fontFamily: FONT_SERIF, fontSize: "11px", color: "var(--text-muted)",
+            fontFamily: FONT_SERIF, fontSize: "11px", color: "var(--blue)",
             background: "none", border: "none", cursor: "pointer",
             textDecoration: "underline",
           }}
         >
-          See full analysis <ChevronRight size={12} />
+          See all the details <ChevronRight size={12} />
         </button>
       </div>
 
@@ -325,9 +325,7 @@ export function BeginnerModeView({ data, accountSize, period, onExpertMode }: Pr
         fontFamily: FONT_SERIF, fontSize: "11px", color: "var(--text-disabled)",
         lineHeight: 1.6,
       }}>
-        This is a quantitative analysis tool, not financial advice. Past signal accuracy does
-        not guarantee future results. Always use a stop loss and never risk more than you can
-        afford to lose. For more detail, click &ldquo;See full analysis&rdquo; above.
+        QuantTrader is an AI analysis tool, not a licensed financial advisor. Every signal could be wrong — the market is unpredictable. That&apos;s why stop-losses exist. Always set your stop-loss before entering a trade, and never invest money you can&apos;t afford to lose. For the full technical breakdown, click &ldquo;See all the details&rdquo; above.
       </div>
     </div>
   );

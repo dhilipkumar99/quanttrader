@@ -272,9 +272,9 @@ export function IndicatorsPanel({
   return (
     <div className="panel" style={{ overflow: "visible" }}>
       <div className="panel-header">
-        <span>Technical Indicators</span>
-        <span style={{ fontFamily: FONT_BODY, fontSize: "9px", color: "rgba(255,255,255,0.35)", letterSpacing: "0.08em" }}>
-          HOVER FOR PLAIN-ENGLISH GUIDE
+        <span>Indicators</span>
+        <span style={{ fontFamily: FONT_BODY, fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.04em" }}>
+          👆 Tap any row for plain-English explanation
         </span>
       </div>
 
