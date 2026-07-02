@@ -429,7 +429,7 @@ function AppInner() {
                     </div>
                   )
                 ) : !error ? (
-                  <EmptyState onSymbol={handleSymbol} />
+                  <EmptyState onSymbol={handleSymbol} serverReady={serverReady} />
                 ) : null}
               </>
             )}
@@ -489,7 +489,7 @@ function AppInner() {
   );
 }
 
-function EmptyState({ onSymbol }: { onSymbol: (s: string) => void }) {
+function EmptyState({ onSymbol, serverReady }: { onSymbol: (s: string) => void; serverReady: boolean }) {
   const suggestions = ["AAPL", "NVDA", "MSFT", "TSLA", "META", "AMZN"];
   const { onboarding } = useTrader();
   const router = useRouter();
@@ -565,10 +565,12 @@ function EmptyState({ onSymbol }: { onSymbol: (s: string) => void }) {
         )}
       </div>
 
-      {/* Leaderboard as first-impression trust signal */}
-      <div style={{ width: "100%", maxWidth: "900px" }}>
-        <LeaderboardPanel onSelectSymbol={onSymbol} />
-      </div>
+      {/* Leaderboard — only mount after server is ready to avoid hammering during cold start */}
+      {serverReady && (
+        <div style={{ width: "100%", maxWidth: "900px" }}>
+          <LeaderboardPanel onSelectSymbol={onSymbol} />
+        </div>
+      )}
     </div>
   );
 }

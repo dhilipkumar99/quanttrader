@@ -185,49 +185,56 @@ def _prewarm():
             print(f"[prewarm] {sym} SQLite error: {e}", flush=True)
             needs_fetch.append(sym)
 
-    # Phase 2 — single batch download for anything not in SQLite
+    # Phase 2 — batch download in chunks of 5 to stay under yfinance rate limits.
+    # threads=False required to avoid dict-mutation race condition in yfinance internals.
+    # Chunking (5 at a time, 1s pause between chunks) is ~4× faster than one-by-one
+    # while still avoiding the 429 that a single 20-ticker batch triggers.
     if needs_fetch:
         print(f"[prewarm] fetching {len(needs_fetch)} symbols via yfinance…", flush=True)
-        try:
-            raw = yf.download(
-                tickers=needs_fetch, period=period, interval="1d",
-                group_by="ticker", auto_adjust=True, progress=False,
-                threads=False,
-            )
-            avail = set(raw.columns.get_level_values(0)) if isinstance(raw.columns, pd.MultiIndex) else set()
-            for sym in needs_fetch:
-                try:
-                    sym_u = sym.upper()
-                    if isinstance(raw.columns, pd.MultiIndex):
-                        if sym_u not in avail:
+        CHUNK = 5
+        for chunk_start in range(0, len(needs_fetch), CHUNK):
+            chunk = needs_fetch[chunk_start:chunk_start + CHUNK]
+            try:
+                raw = yf.download(
+                    tickers=chunk, period=period, interval="1d",
+                    group_by="ticker", auto_adjust=True, progress=False,
+                    threads=False,
+                )
+                avail = set(raw.columns.get_level_values(0)) if isinstance(raw.columns, pd.MultiIndex) else set()
+                for sym in chunk:
+                    try:
+                        sym_u = sym.upper()
+                        if isinstance(raw.columns, pd.MultiIndex):
+                            if sym_u not in avail:
+                                continue
+                            df = _clean_yf_df(raw[sym_u].copy())
+                        else:
+                            df = _clean_yf_df(raw.copy())
+                        if df.empty or len(df) < 50:
                             continue
-                        df = _clean_yf_df(raw[sym_u].copy())
-                    else:
-                        df = _clean_yf_df(raw.copy())
-                    if df.empty or len(df) < 50:
-                        continue
-                    _db_put(sym, period, "1d", df, "yfinance")
-                    _cache_symbol(sym, period, df, "yfinance")
-                    print(f"[prewarm] {sym} ✓ yfinance", flush=True)
-                except Exception as e:
-                    print(f"[prewarm] {sym} parse error: {e}", flush=True)
-        except Exception as e:
-            print(f"[prewarm] batch failed: {e}", flush=True)
+                        _db_put(sym, period, "1d", df, "yfinance")
+                        _cache_symbol(sym, period, df, "yfinance")
+                        print(f"[prewarm] {sym} ✓ yfinance", flush=True)
+                    except Exception as e:
+                        print(f"[prewarm] {sym} parse error: {e}", flush=True)
+            except Exception as e:
+                print(f"[prewarm] chunk {chunk} failed: {e}", flush=True)
+            if chunk_start + CHUNK < len(needs_fetch):
+                _time.sleep(1)  # 1s between chunks keeps us under rate limit
 
     _prewarm_done = True
     _bg_refresh_done = True  # no bulk refresh — live fetch available immediately
     print("[prewarm] done — /health ok, live fetch enabled", flush=True)
 
-    # Pre-compute leaderboard now that all 20 symbols are in SQLite.
-    def _prewarm_leaderboard():
-        for h in ("swing", "day", "month"):
-            try:
-                _cached(f"leaderboard:{h}", ttl=3600, fn=lambda horizon=h: _compute_leaderboard(horizon))
-                print(f"[prewarm] leaderboard:{h} ready", flush=True)
-            except Exception as e:
-                print(f"[prewarm] leaderboard:{h} error: {e}", flush=True)
-
-    _threading.Thread(target=_prewarm_leaderboard, daemon=True, name="prewarm-leaderboard").start()
+    # Pre-compute leaderboard sequentially (swing first — the default horizon shown on home page).
+    # Run in this same thread so it's done before user hits the page on a warm restart.
+    # On cold start this runs after yfinance fetch; on SQLite-warm restart it's nearly instant.
+    for h in ("swing", "day", "month"):
+        try:
+            _cached(f"leaderboard:{h}", ttl=3600, fn=lambda horizon=h: _compute_leaderboard(horizon))
+            print(f"[prewarm] leaderboard:{h} ready", flush=True)
+        except Exception as e:
+            print(f"[prewarm] leaderboard:{h} error: {e}", flush=True)
 
 _threading.Thread(target=_prewarm, daemon=True, name="prewarm").start()
 
@@ -1125,7 +1132,7 @@ _LEADERBOARD_CORE = [
 def _compute_leaderboard(horizon: str) -> dict:
     """Walk-forward signal accuracy for CORE symbols. Called from prewarm and on-demand."""
     import concurrent.futures
-    WARMUP = 60; STEP = 10; FWDLOOK = 10
+    WARMUP = 60; STEP = 20; FWDLOOK = 10  # STEP=20 halves iterations vs STEP=10
     rows = []
 
     def _do_one(sym: str):
@@ -1169,7 +1176,7 @@ def _compute_leaderboard(horizon: str) -> dict:
         except Exception:
             return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         for item in ex.map(_do_one, _LEADERBOARD_CORE):
             if item is not None:
                 rows.append(item)
@@ -1186,10 +1193,14 @@ def _compute_leaderboard(horizon: str) -> dict:
 @app.get("/api/leaderboard")
 def leaderboard(horizon: str = "swing"):
     """Signal leaderboard: win-rate and avg return across 20 core symbols. Cached 1h."""
+    if not _prewarm_done:
+        # Prewarm still running — leaderboard will be ready shortly after /health returns ok.
+        # Client is gated behind serverReady so this branch only hits on direct API calls.
+        return JSONResponse({"error": "computing", "retry_after": 5}, status_code=503, headers={"Retry-After": "5", "Cache-Control": "no-store"})
     cache_key = f"leaderboard:{horizon}"
     val = _cached(cache_key, ttl=3600, fn=lambda: _compute_leaderboard(horizon))
     if val is None:
-        return JSONResponse({"error": "computing", "retry_after": 15}, status_code=503, headers={"Retry-After": "15", "Cache-Control": "no-store"})
+        return JSONResponse({"error": "computing", "retry_after": 10}, status_code=503, headers={"Retry-After": "10", "Cache-Control": "no-store"})
     return JSONResponse(val, headers={"Cache-Control": "no-store"})
 
 
